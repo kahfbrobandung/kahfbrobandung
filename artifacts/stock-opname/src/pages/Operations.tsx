@@ -46,7 +46,7 @@ function jakartaDateInput() {
 
 const lineFormSchema = z
   .object({
-    barcode: z.string().trim().min(1, "Masukkan atau scan barcode."),
+    barcode: z.string().trim().min(1, "Masukkan kode produk atau pilih produk tersimpan."),
     product: z.string().trim().min(1, "Nama produk wajib diisi."),
     displayQuantity: integerText,
     secondaryDisplayQuantity: integerText,
@@ -71,7 +71,7 @@ const visitFormSchema = z.object({
 });
 
 const restockFormSchema = z.object({
-  barcode: z.string().trim().min(1, "Masukkan atau scan barcode."),
+  barcode: z.string().trim().min(1, "Masukkan kode produk atau pilih produk tersimpan."),
   product: z.string().trim().min(1, "Nama produk wajib diisi."),
   quantity: z.string().regex(/^[1-9]\d*$/, "Jumlah barang masuk minimal 1."),
   receivedAt: z.string().min(1, "Waktu penerimaan wajib diisi."),
@@ -103,6 +103,8 @@ export default function Operations() {
   const activeStore = storeName.trim();
   const [activeTab, setActiveTab] = useState<"visit" | "restock">("visit");
   const [scannerTarget, setScannerTarget] = useState<"visit" | "restock" | null>(null);
+  const [visitProductSelection, setVisitProductSelection] = useState("");
+  const [restockProductSelection, setRestockProductSelection] = useState("");
   const [lines, setLines] = useState<StocktakeLineInput[]>([]);
   const [invoiceEditor, setInvoiceEditor] = useState<{
     id: number;
@@ -190,9 +192,11 @@ export default function Operations() {
     const barcode = scannedValue.trim();
     const knownProduct = productOptions.find((product) => product.barcode === barcode);
     if (target === "visit") {
+      setVisitProductSelection(knownProduct?.barcode ?? "");
       lineForm.setValue("barcode", barcode, { shouldDirty: true, shouldValidate: true });
       lineForm.setValue("product", knownProduct?.name ?? "", { shouldDirty: true, shouldValidate: true });
     } else {
+      setRestockProductSelection(knownProduct?.barcode ?? "");
       restockForm.setValue("barcode", barcode, { shouldDirty: true, shouldValidate: true });
       restockForm.setValue("product", knownProduct?.name ?? "", { shouldDirty: true, shouldValidate: true });
     }
@@ -243,6 +247,7 @@ export default function Operations() {
         warehouseQuantity: Number(values.warehouseQuantity || 0),
       },
     ]);
+    setVisitProductSelection("");
     visitForm.clearErrors("root");
     lineForm.reset({
       barcode: "",
@@ -287,6 +292,7 @@ export default function Operations() {
         onSuccess: (visit) => {
           visitClientId.current = null;
           setLines([]);
+          setVisitProductSelection("");
           visitForm.reset({ visitedAt: localDateTime() });
           refreshAffectedData();
           toast({
@@ -330,6 +336,7 @@ export default function Operations() {
       {
         onSuccess: (entry) => {
           restockClientId.current = null;
+          setRestockProductSelection("");
           restockForm.reset({ barcode: "", product: "", quantity: "", receivedAt: localDateTime(), note: "" });
           refreshAffectedData();
           toast({
@@ -526,12 +533,38 @@ export default function Operations() {
 
               <Form {...lineForm}>
                 <form onSubmit={onAddLine} className="space-y-4 border-b border-border pb-5">
+                  <div>
+                    <label htmlFor="visit-product-select" className="mb-1.5 block text-sm font-medium">Pilih produk tersimpan (tanpa scan)</label>
+                    <select
+                      id="visit-product-select"
+                      value={visitProductSelection}
+                      onChange={(event) => {
+                        const product = productOptions.find((item) => item.barcode === event.target.value);
+                        setVisitProductSelection(product?.barcode ?? "");
+                        if (product) {
+                          lineForm.setValue("barcode", product.barcode, { shouldDirty: true, shouldValidate: true });
+                          lineForm.setValue("product", product.name, { shouldDirty: true, shouldValidate: true });
+                        }
+                      }}
+                      disabled={productOptions.length === 0}
+                      className="h-11 w-full rounded-lg border border-input bg-background px-3 text-sm disabled:opacity-60"
+                      data-testid="select-visit-product"
+                    >
+                      <option value="">Pilih produk dari daftar</option>
+                      {productOptions.map((product) => (
+                        <option key={product.barcode} value={product.barcode}>{product.name} · {product.barcode}</option>
+                      ))}
+                    </select>
+                    <p className="mt-1.5 text-xs text-muted-foreground">
+                      Atau isi nama dan barcode/kode produk secara manual di bawah. Pemindai hanya pilihan.
+                    </p>
+                  </div>
                   <FormField
                     control={lineForm.control}
                     name="barcode"
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>Barcode</FormLabel>
+                        <FormLabel>Barcode / kode produk</FormLabel>
                         <FormControl>
                           <div className="flex gap-2">
                             <input
@@ -543,9 +576,10 @@ export default function Operations() {
                               onChange={(event) => {
                                 field.onChange(event);
                                 const match = productOptions.find((product) => product.barcode === event.target.value.trim());
+                                setVisitProductSelection(match?.barcode ?? "");
                                 lineForm.setValue("product", match?.name ?? "", { shouldDirty: true, shouldValidate: false });
                               }}
-                              placeholder="Scan atau masukkan barcode"
+                              placeholder="Masukkan kode atau scan"
                               className="h-11 min-w-0 flex-1 rounded-lg border border-input bg-background px-3 text-sm"
                               data-testid="input-visit-barcode"
                             />
@@ -574,7 +608,16 @@ export default function Operations() {
                       <FormItem>
                         <FormLabel>Nama produk</FormLabel>
                         <FormControl>
-                          <input {...field} placeholder="Nama produk" className="h-11 w-full rounded-lg border border-input bg-background px-3 text-sm" data-testid="input-visit-product-name" />
+                          <input
+                            {...field}
+                            onChange={(event) => {
+                              setVisitProductSelection("");
+                              field.onChange(event);
+                            }}
+                            placeholder="Nama produk"
+                            className="h-11 w-full rounded-lg border border-input bg-background px-3 text-sm"
+                            data-testid="input-visit-product-name"
+                          />
                         </FormControl>
                         <FormMessage />
                       </FormItem>
@@ -619,7 +662,7 @@ export default function Operations() {
 
               {productOptions.length === 0 && (
                 <p className="mt-4 rounded-lg border border-dashed border-border p-3 text-sm text-muted-foreground" data-testid="status-no-products">
-                  Daftar produk masih kosong? Scan atau masukkan barcode, lalu isi nama produk secara manual.
+                  Belum ada produk tersimpan. Masukkan nama dan barcode/kode produk sendiri; tidak perlu scan.
                 </p>
               )}
 
@@ -740,12 +783,38 @@ export default function Operations() {
               </p>
               <Form {...restockForm}>
                 <form onSubmit={onSaveRestock} className="space-y-4">
+                  <div>
+                    <label htmlFor="restock-product-select" className="mb-1.5 block text-sm font-medium">Pilih produk tersimpan (tanpa scan)</label>
+                    <select
+                      id="restock-product-select"
+                      value={restockProductSelection}
+                      onChange={(event) => {
+                        const product = productOptions.find((item) => item.barcode === event.target.value);
+                        setRestockProductSelection(product?.barcode ?? "");
+                        if (product) {
+                          restockForm.setValue("barcode", product.barcode, { shouldDirty: true, shouldValidate: true });
+                          restockForm.setValue("product", product.name, { shouldDirty: true, shouldValidate: true });
+                        }
+                      }}
+                      disabled={productOptions.length === 0}
+                      className="h-11 w-full rounded-lg border border-input bg-background px-3 text-sm disabled:opacity-60"
+                      data-testid="select-restock-product"
+                    >
+                      <option value="">Pilih produk dari daftar</option>
+                      {productOptions.map((product) => (
+                        <option key={product.barcode} value={product.barcode}>{product.name} · {product.barcode}</option>
+                      ))}
+                    </select>
+                    <p className="mt-1.5 text-xs text-muted-foreground">
+                      Atau isi nama dan barcode/kode produk secara manual di bawah. Pemindai hanya pilihan.
+                    </p>
+                  </div>
                   <FormField
                     control={restockForm.control}
                     name="barcode"
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>Barcode</FormLabel>
+                        <FormLabel>Barcode / kode produk</FormLabel>
                         <FormControl>
                           <div className="flex gap-2">
                             <input
@@ -757,9 +826,10 @@ export default function Operations() {
                               onChange={(event) => {
                                 field.onChange(event);
                                 const match = productOptions.find((product) => product.barcode === event.target.value.trim());
+                                setRestockProductSelection(match?.barcode ?? "");
                                 restockForm.setValue("product", match?.name ?? "", { shouldDirty: true, shouldValidate: false });
                               }}
-                              placeholder="Scan atau masukkan barcode"
+                              placeholder="Masukkan kode atau scan"
                               className="h-11 min-w-0 flex-1 rounded-lg border border-input bg-background px-3 text-sm"
                               data-testid="input-restock-barcode"
                             />
@@ -788,7 +858,16 @@ export default function Operations() {
                       <FormItem>
                         <FormLabel>Nama produk</FormLabel>
                         <FormControl>
-                          <input {...field} placeholder="Nama produk" className="h-11 w-full rounded-lg border border-input bg-background px-3 text-sm" data-testid="input-restock-product-name" />
+                          <input
+                            {...field}
+                            onChange={(event) => {
+                              setRestockProductSelection("");
+                              field.onChange(event);
+                            }}
+                            placeholder="Nama produk"
+                            className="h-11 w-full rounded-lg border border-input bg-background px-3 text-sm"
+                            data-testid="input-restock-product-name"
+                          />
                         </FormControl>
                         <FormMessage />
                       </FormItem>
@@ -796,7 +875,7 @@ export default function Operations() {
                   />
                   {productOptions.length === 0 && (
                     <p className="-mt-2 text-xs text-muted-foreground">
-                      Daftar produk kosong? Masukkan barcode sendiri dan isi nama produk untuk melanjutkan.
+                      Belum ada produk tersimpan. Masukkan nama dan barcode/kode produk sendiri; tidak perlu scan.
                     </p>
                   )}
                   <FormField
