@@ -10,6 +10,10 @@ servers:
 tags:
   - name: health
     description: Health operations
+  - name: stock
+    description: Stock storage and spreadsheet synchronization
+  - name: sales
+    description: Store visits, restocks, and sales monitoring
 paths:
   /healthz:
     get:
@@ -24,6 +28,512 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+  /stock-entries:
+    get:
+      operationId: listStockEntries
+      tags: [stock]
+      summary: List stored stock entries
+      description: Returns the latest stock transactions stored on the server.
+      parameters:
+        - name: store
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 25
+      responses:
+        "200":
+          description: Stock entries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/StockEntry"
+    post:
+      operationId: createStockEntry
+      tags: [stock]
+      summary: Store and synchronize a stock entry
+      description: Stores a stock transaction on the server first, then attempts to mirror it to Google Sheets.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StockEntryInput"
+      responses:
+        "201":
+          description: Stored stock entry with spreadsheet synchronization status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StockEntry"
+        "400":
+          description: Invalid stock entry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /stock-balances:
+    get:
+      operationId: listStockBalances
+      tags: [stock]
+      summary: List aggregated stock balances
+      description: Returns one unified on-hand balance per store and barcode. The latest visit is the physical-count baseline; stock inputs and incoming goods after that visit adjust it. If no visit exists, all stock inputs and incoming goods contribute to the balance. When limit is omitted, all product balances for the store are returned.
+      parameters:
+        - name: store
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: Aggregated stock balances by SKU
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/StockBalance"
+  /stores:
+    get:
+      operationId: listStores
+      tags: [sales]
+      summary: List known stores
+      description: Returns stores that have stock history, visits, or restocks.
+      responses:
+        "200":
+          description: Known stores
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Store"
+  /stock-visits:
+    get:
+      operationId: listStockVisits
+      tags: [sales]
+      summary: List stock opname visits
+      parameters:
+        - name: store
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 100
+      responses:
+        "200":
+          description: Visits with their stocktake lines
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/StockVisit"
+    post:
+      operationId: createStockVisit
+      tags: [sales]
+      summary: Save a stock opname visit
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StockVisitInput"
+      responses:
+        "201":
+          description: Saved visit and stocktake lines
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StockVisit"
+        "400":
+          description: Invalid visit
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /stock-restocks:
+    get:
+      operationId: listStockRestocks
+      tags: [sales]
+      summary: List incoming stock records
+      parameters:
+        - name: store
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 100
+      responses:
+        "200":
+          description: Incoming stock records
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/StockRestock"
+    post:
+      operationId: createStockRestock
+      tags: [sales]
+      summary: Record incoming stock
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StockRestockInput"
+      responses:
+        "201":
+          description: Saved incoming stock record
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StockRestock"
+        "400":
+          description: Invalid incoming stock record
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /stock-restocks/{id}/invoice:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+          minimum: 1
+    patch:
+      operationId: updateStockRestockInvoice
+      tags: [sales]
+      summary: Match a late invoice to an incoming stock record
+      description: Records the invoice quantity as a signed stock adjustment at invoice-recording time, so matching a late invoice never adds its full quantity twice.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StockRestockInvoiceInput"
+      responses:
+        "200":
+          description: Updated incoming stock and invoice match
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StockRestock"
+        "400":
+          description: Invalid invoice or incoming stock ID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Incoming stock record not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      operationId: clearStockRestockInvoice
+      tags: [sales]
+      summary: Remove an invoice match from an incoming stock record
+      description: Clears invoice details and restores the original received quantity as the only stock movement.
+      responses:
+        "204":
+          description: Invoice match cleared
+        "400":
+          description: Invalid incoming stock ID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Incoming stock record not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /sales-monitor:
+    get:
+      operationId: getSalesMonitor
+      tags: [sales]
+      summary: Get automatic sales calculations and monitoring summaries
+      description: Calculates sales between consecutive stocktakes for each store and barcode, accounting for restocks in that interval.
+      parameters:
+        - name: from
+          in: query
+          required: true
+          description: Inclusive calendar day in the Asia/Jakarta timezone.
+          schema:
+            type: string
+            format: date
+        - name: to
+          in: query
+          required: true
+          description: Inclusive calendar day in the Asia/Jakarta timezone.
+          schema:
+            type: string
+            format: date
+        - name: store
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Sales monitoring data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SalesMonitor"
+        "400":
+          description: Invalid date range or store
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /daily-sales:
+    get:
+      operationId: getDailySales
+      tags: [sales]
+      summary: List recorded daily sales transactions by store
+      description: Returns only stock entries recorded as Penjualan within the requested Asia/Jakarta date range. It does not infer sales from stocktake intervals.
+      parameters:
+        - name: from
+          in: query
+          required: true
+          description: Inclusive calendar day in the Asia/Jakarta timezone.
+          schema:
+            type: string
+            format: date
+        - name: to
+          in: query
+          required: true
+          description: Inclusive calendar day in the Asia/Jakarta timezone.
+          schema:
+            type: string
+            format: date
+        - name: store
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 5000
+            default: 5000
+      responses:
+        "200":
+          description: Recorded Penjualan transactions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/DailySalesTransaction"
+        "400":
+          description: Invalid date range or store
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /sales-activity:
+    get:
+      operationId: getSalesActivity
+      tags: [sales]
+      summary: Get a combined store activity history
+      description: Combines stock input transactions, stock opname visits, and incoming stock records without changing the sales estimate formula.
+      parameters:
+        - name: from
+          in: query
+          required: true
+          description: Inclusive calendar day in the Asia/Jakarta timezone.
+          schema:
+            type: string
+            format: date
+        - name: to
+          in: query
+          required: true
+          description: Inclusive calendar day in the Asia/Jakarta timezone.
+          schema:
+            type: string
+            format: date
+        - name: store
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 100
+      responses:
+        "200":
+          description: Combined activity records, newest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SalesActivityRecord"
+        "400":
+          description: Invalid date range or store
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /stock-entries/{id}:
+    delete:
+      operationId: deleteStockEntry
+      tags: [stock]
+      summary: Delete a stock input transaction from the server
+      description: Removes the server record. A row already mirrored to Google Sheets may remain there.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: Deleted stock entry and spreadsheet mirror warning
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeleteStockEntryResult"
+        "400":
+          description: Invalid stock entry ID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Stock entry not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /stock-visits/{id}:
+    delete:
+      operationId: deleteStockVisit
+      tags: [sales]
+      summary: Delete a stock opname visit
+      description: Deletes the visit and all SKU lines in that visit; sales estimates are recalculated from the remaining visits.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "204":
+          description: Visit deleted
+        "400":
+          description: Invalid visit ID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Visit not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /stock-restocks/{id}:
+    delete:
+      operationId: deleteStockRestock
+      tags: [sales]
+      summary: Delete an incoming stock record
+      description: Deletes one incoming stock record and recalculates affected sales estimates.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "204":
+          description: Incoming stock record deleted
+        "400":
+          description: Invalid incoming stock ID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Incoming stock record not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /stock-entries/{id}/retry-sync:
+    post:
+      operationId: retryStockEntrySync
+      tags: [stock]
+      summary: Retry spreadsheet synchronization
+      description: Retries sending a server-stored stock entry to Google Sheets.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: Updated stock entry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StockEntry"
+        "404":
+          description: Stock entry not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 components:
   schemas:
     HealthStatus:
@@ -33,4 +543,429 @@ components:
           type: string
       required:
         - status
+    StockEntryInput:
+      type: object
+      properties:
+        clientId:
+          type: string
+          minLength: 1
+          maxLength: 100
+        store:
+          type: string
+          minLength: 1
+          maxLength: 200
+        transaction:
+          type: string
+          minLength: 1
+          maxLength: 100
+        product:
+          type: string
+          minLength: 1
+          maxLength: 300
+        quantity:
+          type: integer
+          minimum: 0
+        barcode:
+          type: string
+          minLength: 1
+          maxLength: 100
+        displayQuantity:
+          type: integer
+          minimum: 0
+        secondaryDisplayQuantity:
+          type: integer
+          minimum: 0
+        warehouseQuantity:
+          type: integer
+          minimum: 0
+      required:
+        - clientId
+        - store
+        - transaction
+        - product
+        - quantity
+        - barcode
+        - displayQuantity
+        - secondaryDisplayQuantity
+        - warehouseQuantity
+    StockEntry:
+      allOf:
+        - $ref: "#/components/schemas/StockEntryInput"
+        - type: object
+          properties:
+            id:
+              type: integer
+            syncStatus:
+              type: string
+              enum: [pending, synced, failed]
+            syncError:
+              type: ["string", "null"]
+            createdAt:
+              type: string
+              format: date-time
+            syncedAt:
+              type: ["string", "null"]
+              format: date-time
+          required:
+            - id
+            - syncStatus
+            - syncError
+            - createdAt
+            - syncedAt
+    StockBalance:
+      type: object
+      properties:
+        store:
+          type: string
+        product:
+          type: string
+        barcode:
+          type: string
+        totalQuantity:
+          type: integer
+          description: Current balance after applying stock entries, incoming goods, and the latest physical visit.
+        displayQuantity:
+          type: integer
+        secondaryDisplayQuantity:
+          type: integer
+        warehouseQuantity:
+          type: integer
+        entryCount:
+          type: integer
+        updatedAt:
+          type: string
+          format: date-time
+      required:
+        - store
+        - product
+        - barcode
+        - totalQuantity
+        - displayQuantity
+        - secondaryDisplayQuantity
+        - warehouseQuantity
+        - entryCount
+        - updatedAt
+    Store:
+      type: object
+      properties:
+        name:
+          type: string
+      required: [name]
+    StocktakeLineInput:
+      type: object
+      properties:
+        product:
+          type: string
+          minLength: 1
+          maxLength: 300
+        barcode:
+          type: string
+          minLength: 1
+          maxLength: 100
+        displayQuantity:
+          type: integer
+          minimum: 0
+        secondaryDisplayQuantity:
+          type: integer
+          minimum: 0
+        warehouseQuantity:
+          type: integer
+          minimum: 0
+      required:
+        - product
+        - barcode
+        - displayQuantity
+        - secondaryDisplayQuantity
+        - warehouseQuantity
+    StockVisitInput:
+      type: object
+      properties:
+        clientId:
+          type: string
+          minLength: 1
+          maxLength: 100
+        store:
+          type: string
+          minLength: 1
+          maxLength: 200
+        visitedAt:
+          type: string
+          format: date-time
+        lines:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/StocktakeLineInput"
+      required: [clientId, store, visitedAt, lines]
+    StocktakeLine:
+      allOf:
+        - $ref: "#/components/schemas/StocktakeLineInput"
+        - type: object
+          properties:
+            id:
+              type: integer
+            visitId:
+              type: integer
+            totalQuantity:
+              type: integer
+          required: [id, visitId, totalQuantity]
+    StockVisit:
+      allOf:
+        - $ref: "#/components/schemas/StockVisitInput"
+        - type: object
+          properties:
+            id:
+              type: integer
+            createdAt:
+              type: string
+              format: date-time
+            lines:
+              type: array
+              items:
+                $ref: "#/components/schemas/StocktakeLine"
+          required: [id, createdAt]
+    StockRestockInput:
+      type: object
+      properties:
+        clientId:
+          type: string
+          minLength: 1
+          maxLength: 100
+        store:
+          type: string
+          minLength: 1
+          maxLength: 200
+        product:
+          type: string
+          minLength: 1
+          maxLength: 300
+        barcode:
+          type: string
+          minLength: 1
+          maxLength: 100
+        quantity:
+          type: integer
+          minimum: 1
+        receivedAt:
+          type: string
+          format: date-time
+        note:
+          type: string
+          maxLength: 500
+      required: [clientId, store, product, barcode, quantity, receivedAt]
+    StockRestock:
+      allOf:
+        - $ref: "#/components/schemas/StockRestockInput"
+        - type: object
+          properties:
+            id:
+              type: integer
+            createdAt:
+              type: string
+              format: date-time
+            invoiceNumber:
+              type: ["string", "null"]
+              maxLength: 120
+            invoiceQuantity:
+              type: ["integer", "null"]
+              minimum: 0
+            invoiceDate:
+              type: ["string", "null"]
+              format: date
+            invoiceRecordedAt:
+              type: ["string", "null"]
+              format: date-time
+            effectiveQuantity:
+              type: integer
+          required: [id, createdAt, invoiceNumber, invoiceQuantity, invoiceDate, invoiceRecordedAt, effectiveQuantity]
+    StockRestockInvoiceInput:
+      type: object
+      properties:
+        invoiceNumber:
+          type: string
+          minLength: 1
+          maxLength: 120
+        invoiceQuantity:
+          type: integer
+          minimum: 0
+        invoiceDate:
+          type: string
+          format: date
+      required: [invoiceNumber, invoiceQuantity, invoiceDate]
+    DailySalesTransaction:
+      type: object
+      properties:
+        id:
+          type: integer
+        store:
+          type: string
+        product:
+          type: string
+        barcode:
+          type: string
+        quantity:
+          type: integer
+        displayQuantity:
+          type: integer
+        secondaryDisplayQuantity:
+          type: integer
+        warehouseQuantity:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, store, product, barcode, quantity, displayQuantity, secondaryDisplayQuantity, warehouseQuantity, createdAt]
+    SalesCalculation:
+      type: object
+      properties:
+        store:
+          type: string
+        product:
+          type: string
+        barcode:
+          type: string
+        previousVisitAt:
+          type: string
+          format: date-time
+        currentVisitAt:
+          type: string
+          format: date-time
+        previousStock:
+          type: integer
+        restockQuantity:
+          type: integer
+        stockEntryAdjustment:
+          type: integer
+        currentStock:
+          type: integer
+        soldQuantity:
+          type: integer
+        hasStockVariance:
+          type: boolean
+      required: [store, product, barcode, previousVisitAt, currentVisitAt, previousStock, restockQuantity, stockEntryAdjustment, currentStock, soldQuantity, hasStockVariance]
+    SalesActivityRecord:
+      type: object
+      properties:
+        id:
+          type: integer
+        recordType:
+          type: string
+          enum: [stock_entry, stock_visit, stock_restock]
+        store:
+          type: string
+        occurredAt:
+          type: string
+          format: date-time
+        title:
+          type: string
+        description:
+          type: string
+        quantity:
+          type: ["integer", "null"]
+        skuCount:
+          type: ["integer", "null"]
+        syncStatus:
+          type: ["string", "null"]
+      required: [id, recordType, store, occurredAt, title, description, quantity, skuCount, syncStatus]
+    DeleteStockEntryResult:
+      type: object
+      properties:
+        id:
+          type: integer
+        spreadsheetMirrorMayRemain:
+          type: boolean
+      required: [id, spreadsheetMirrorMayRemain]
+    SalesDailyTrend:
+      type: object
+      properties:
+        date:
+          type: string
+          format: date
+        soldQuantity:
+          type: integer
+        restockQuantity:
+          type: integer
+      required: [date, soldQuantity, restockQuantity]
+    SalesProductSummary:
+      type: object
+      properties:
+        store:
+          type: string
+        product:
+          type: string
+        barcode:
+          type: string
+        totalSold:
+          type: integer
+        totalRestocked:
+          type: integer
+        latestStock:
+          type: integer
+        visitComparisons:
+          type: integer
+        varianceCount:
+          type: integer
+        lastVisitAt:
+          type: string
+          format: date-time
+      required: [store, product, barcode, totalSold, totalRestocked, latestStock, visitComparisons, varianceCount, lastVisitAt]
+    SalesStoreSummary:
+      type: object
+      properties:
+        store:
+          type: string
+        totalSold:
+          type: integer
+        totalRestocked:
+          type: integer
+        skuCount:
+          type: integer
+        varianceCount:
+          type: integer
+      required: [store, totalSold, totalRestocked, skuCount, varianceCount]
+    SalesMonitorSummary:
+      type: object
+      properties:
+        totalSold:
+          type: integer
+        totalRestocked:
+          type: integer
+        activeStores:
+          type: integer
+        trackedSkus:
+          type: integer
+        visitComparisons:
+          type: integer
+        varianceCount:
+          type: integer
+      required: [totalSold, totalRestocked, activeStores, trackedSkus, visitComparisons, varianceCount]
+    SalesMonitor:
+      type: object
+      properties:
+        summary:
+          $ref: "#/components/schemas/SalesMonitorSummary"
+        dailyTrend:
+          type: array
+          items:
+            $ref: "#/components/schemas/SalesDailyTrend"
+        stores:
+          type: array
+          items:
+            $ref: "#/components/schemas/SalesStoreSummary"
+        products:
+          type: array
+          items:
+            $ref: "#/components/schemas/SalesProductSummary"
+        calculations:
+          type: array
+          items:
+            $ref: "#/components/schemas/SalesCalculation"
+      required: [summary, dailyTrend, stores, products, calculations]
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
 

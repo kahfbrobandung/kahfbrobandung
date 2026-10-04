@@ -1,0 +1,32 @@
+tolong bantu perbaiki beberapa masalah pada aplikasi pencatatan stok dan penjualan ini. Saat ini, sistemnya belum berjalan sesuai dengan cara kerja di lapangan. Berikut rangkumannya:
+
+1. Masalah: Penjualan Tidak Terhitung Otomatis
+
+· Kondisi saat ini: Saat saya melakukan kunjungan (Visit/Stok Opname), saya menginput stok fisik. Misalnya, kunjungan tanggal 3 stoknya 10, lalu kunjungan tanggal 4 stoknya 5. Tetapi di menu "Penjualan Harian", tidak ada catatan apa-apa (0 transaksi).
+· Harapan: Sistem harus pintar membaca selisih stok. Jika stok turun dari 10 menjadi 5, sistem otomatis menganggap itu sebagai penjualan 5 pcs di tanggal tersebut.
+
+2. Masalah: Laporan Digabung, Bukan Per Hari
+
+· Kondisi saat ini: Laporan penjualan dijumlahkan semua dari awal periode. Saya tidak tahu berapa yang terjual di tanggal 3 dan berapa di tanggal 4.
+· Harapan: Tampilkan laporan penjualan secara terpisah per hari/per kunjungan. Saya ingin melihat riwayat: Tanggal 3 terjual berapa, Tanggal 4 terjual berapa.
+
+3. Masalah: Barang Datang yang Telat Diinput (Data Mundur)
+
+· Kondisi saat ini: Barang fisik datang hari Rabu, tetapi data baru saya terima hari Minggu. Contoh kasus:
+  · Hari Senin: Stok 10.
+  · Hari Kamis: Saya kunjungan, stok fisik jadi 13 (karena ada barang masuk 5, tapi saya belum tahu).
+  · Sistem jadi bingung dan stok jadi acak-acakan.
+· Harapan: Saya harus bisa menginput "Barang Datang" di hari Minggu tapi dengan tanggal mundur (tanggal Rabu). Sistem harus otomatis menghitung ulang, sehingga diketahui bahwa penjualan sebenarnya adalah: (Stok 10 + Barang Datang 5) - Stok Fisik 13 = Terjual 2 pcs.
+
+4. Masalah: Sinkronisasi ke Kunjungan Berikutnya
+
+· Kondisi saat ini: Setelah saya input data barang datang yang telat itu, kunjungan saya di hari Senin berikutnya jadi kacau atau penjualannya tidak muncul.
+· Harapan: Begitu data telat disimpan, sistem harus otomatis memperbaiki stok untuk kunjungan selanjutnya. Jadi, saat saya kunjungan lagi hari Senin, stok sistem sudah benar, dan penjualan harian di hari Senin itu langsung muncul tanpa harus saya hitung manual.
+
+Tujuan Akhir:
+Saya ingin aplikasi ini bisa:
+
+1. Menghitung penjualan otomatis dari selisih stok kunjungan.
+2. Menampilkan data per hari, bukan digabung.
+3. Menerima input barang datang yang telat (backdate) tanpa membuat data stok jadi acak-acakan.
+4. Memperbarui stok secara otomatis untuk kunjungan-kunjungan berikutnya.

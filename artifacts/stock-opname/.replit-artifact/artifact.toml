@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "Pencatatan Stok Toko"
+description = "Aplikasi pencatatan stok toko, kunjungan stock opname, barang masuk, dan penjualan harian otomatis dari selisih stok fisik."
+version = "1.0.0"
+id = "artifacts/stock-opname"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 22765
+
+[services.development]
+run = "pnpm --filter @workspace/stock-opname run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/stock-opname", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/stock-opname/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "22765"
+BASE_PATH = "/"

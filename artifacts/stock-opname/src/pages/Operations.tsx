@@ -1,0 +1,1027 @@
+import { useMemo, useRef, useState } from "react";
+import { z } from "zod";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { useForm } from "react-hook-form";
+import { Link } from "wouter";
+import { useQueryClient } from "@tanstack/react-query";
+import {
+  getGetSalesActivityQueryKey,
+  getGetSalesMonitorQueryKey,
+  getListStockRestocksQueryKey,
+  getListStockVisitsQueryKey,
+  getListStockBalancesQueryKey,
+  getListStoresQueryKey,
+  useCreateStockRestock,
+  useCreateStockVisit,
+  useClearStockRestockInvoice,
+  useDeleteStockRestock,
+  useDeleteStockVisit,
+  useListStockRestocks,
+  useListStockVisits,
+  useListStores,
+  useUpdateStockRestockInvoice,
+  type StockRestock,
+  type StocktakeLineInput,
+} from "@workspace/api-client-react";
+import { useProducts } from "@/hooks/useProducts";
+import { useStoreName } from "@/hooks/useStoreName";
+import { useToast } from "@/hooks/use-toast";
+import { BarcodeScanner } from "@/components/BarcodeScanner";
+import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
+import { ArrowLeft, Boxes, Camera, ClipboardCheck, FileText, PackagePlus, Plus, Trash2 } from "lucide-react";
+
+const integerText = z
+  .string()
+  .refine((value) => value === "" || /^\d+$/.test(value), "Masukkan bilangan bulat nol atau lebih.");
+
+function jakartaDateInput() {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Jakarta",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date());
+  return `${parts.find((part) => part.type === "year")?.value}-${parts.find((part) => part.type === "month")?.value}-${parts.find((part) => part.type === "day")?.value}`;
+}
+
+const lineFormSchema = z
+  .object({
+    barcode: z.string().trim().min(1, "Masukkan atau scan barcode."),
+    product: z.string().trim().min(1, "Nama produk wajib diisi."),
+    displayQuantity: integerText,
+    secondaryDisplayQuantity: integerText,
+    warehouseQuantity: integerText,
+  })
+  .superRefine((line, context) => {
+    if (
+      line.displayQuantity === "" &&
+      line.secondaryDisplayQuantity === "" &&
+      line.warehouseQuantity === ""
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["displayQuantity"],
+        message: "Isi minimal satu jumlah, termasuk 0 bila stok memang kosong.",
+      });
+    }
+  });
+
+const visitFormSchema = z.object({
+  visitedAt: z.string().min(1, "Tanggal kunjungan wajib diisi."),
+});
+
+const restockFormSchema = z.object({
+  barcode: z.string().trim().min(1, "Masukkan atau scan barcode."),
+  product: z.string().trim().min(1, "Nama produk wajib diisi."),
+  quantity: z.string().regex(/^[1-9]\d*$/, "Jumlah barang masuk minimal 1."),
+  receivedAt: z.string().min(1, "Waktu penerimaan wajib diisi."),
+  note: z.string().max(500, "Catatan maksimal 500 karakter."),
+});
+
+type LineFormValues = z.infer<typeof lineFormSchema>;
+type VisitFormValues = z.infer<typeof visitFormSchema>;
+type RestockFormValues = z.infer<typeof restockFormSchema>;
+
+function localDateTime() {
+  const now = new Date();
+  return new Date(now.getTime() - now.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+}
+
+function formatDate(value: string) {
+  return new Date(value).toLocaleString("id-ID", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+export default function Operations() {
+  const { products } = useProducts();
+  const [storeName, setStoreName] = useStoreName();
+  const activeStore = storeName.trim();
+  const [activeTab, setActiveTab] = useState<"visit" | "restock">("visit");
+  const [scannerTarget, setScannerTarget] = useState<"visit" | "restock" | null>(null);
+  const [lines, setLines] = useState<StocktakeLineInput[]>([]);
+  const [invoiceEditor, setInvoiceEditor] = useState<{
+    id: number;
+    invoiceNumber: string;
+    invoiceQuantity: string;
+    invoiceDate: string;
+  } | null>(null);
+  const [restockSearch, setRestockSearch] = useState("");
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+  const visitClientId = useRef<string | null>(null);
+  const restockClientId = useRef<string | null>(null);
+
+  const storesQuery = useListStores({
+    query: { queryKey: getListStoresQueryKey(), staleTime: 5 * 60 * 1000 },
+  });
+  const visitParams = { store: activeStore || undefined, limit: 25 };
+  const visitHistoryQuery = useListStockVisits(visitParams, {
+    query: {
+      queryKey: getListStockVisitsQueryKey(visitParams),
+      enabled: true,
+      staleTime: 0,
+      refetchOnMount: "always",
+    },
+  });
+  const restockParams = { store: activeStore || undefined, limit: 500 };
+  const restockHistoryQuery = useListStockRestocks(restockParams, {
+    query: {
+      queryKey: getListStockRestocksQueryKey(restockParams),
+      enabled: true,
+      staleTime: 0,
+      refetchOnMount: "always",
+    },
+  });
+
+  const productOptions = useMemo(() => {
+    const byBarcode = new Map<string, { barcode: string; name: string }>();
+    for (const visit of visitHistoryQuery.data ?? []) {
+      for (const line of visit.lines ?? []) {
+        if (!byBarcode.has(line.barcode)) {
+          byBarcode.set(line.barcode, { barcode: line.barcode, name: line.product });
+        }
+      }
+    }
+    for (const entry of restockHistoryQuery.data ?? []) {
+      if (!byBarcode.has(entry.barcode)) {
+        byBarcode.set(entry.barcode, { barcode: entry.barcode, name: entry.product });
+      }
+    }
+    for (const product of products) {
+      byBarcode.set(product.barcode, { barcode: product.barcode, name: product.name });
+    }
+    return [...byBarcode.values()].sort((a, b) => a.name.localeCompare(b.name, "id"));
+  }, [products, restockHistoryQuery.data, visitHistoryQuery.data]);
+  const visibleRestocks = useMemo(() => {
+    const query = restockSearch.trim().toLocaleLowerCase("id-ID");
+    const rows = restockHistoryQuery.data ?? [];
+    if (!query) return rows;
+    return rows.filter((entry) =>
+      [entry.product, entry.barcode, entry.store, entry.invoiceNumber ?? ""]
+        .some((value) => value.toLocaleLowerCase("id-ID").includes(query)),
+    );
+  }, [restockHistoryQuery.data, restockSearch]);
+
+  const lineForm = useForm<LineFormValues>({
+    resolver: zodResolver(lineFormSchema),
+    defaultValues: {
+      barcode: "",
+      product: "",
+      displayQuantity: "",
+      secondaryDisplayQuantity: "",
+      warehouseQuantity: "",
+    },
+  });
+  const visitForm = useForm<VisitFormValues>({
+    resolver: zodResolver(visitFormSchema),
+    defaultValues: { visitedAt: localDateTime() },
+  });
+  const restockForm = useForm<RestockFormValues>({
+    resolver: zodResolver(restockFormSchema),
+    defaultValues: { barcode: "", product: "", quantity: "", receivedAt: localDateTime(), note: "" },
+  });
+
+  const setScannedBarcode = (target: "visit" | "restock", scannedValue: string) => {
+    const barcode = scannedValue.trim();
+    const knownProduct = productOptions.find((product) => product.barcode === barcode);
+    if (target === "visit") {
+      lineForm.setValue("barcode", barcode, { shouldDirty: true, shouldValidate: true });
+      lineForm.setValue("product", knownProduct?.name ?? "", { shouldDirty: true, shouldValidate: true });
+    } else {
+      restockForm.setValue("barcode", barcode, { shouldDirty: true, shouldValidate: true });
+      restockForm.setValue("product", knownProduct?.name ?? "", { shouldDirty: true, shouldValidate: true });
+    }
+    return knownProduct;
+  };
+
+  const handleScanSuccess = (code: string) => {
+    if (!scannerTarget) return;
+    const product = setScannedBarcode(scannerTarget, code);
+    setScannerTarget(null);
+    toast({
+      title: product ? "Barcode ditemukan" : "Barcode berhasil dibaca",
+      description: product
+        ? `Produk: ${product.name}`
+        : `${code}. Isi nama produk untuk melanjutkan.`,
+    });
+  };
+
+  const refreshAffectedData = () => {
+    queryClient.invalidateQueries({ queryKey: getListStockVisitsQueryKey() });
+    queryClient.invalidateQueries({ queryKey: getListStockRestocksQueryKey() });
+    queryClient.invalidateQueries({ queryKey: getListStockBalancesQueryKey() });
+    queryClient.invalidateQueries({ queryKey: getListStoresQueryKey() });
+    queryClient.invalidateQueries({ queryKey: getGetSalesMonitorQueryKey() });
+    queryClient.invalidateQueries({ queryKey: getGetSalesActivityQueryKey() });
+  };
+
+  const onAddLine = lineForm.handleSubmit((values) => {
+    if (!activeStore) {
+      toast({
+        title: "Pilih toko terlebih dahulu",
+        description: "Satu kunjungan hanya boleh berisi stok dari satu toko.",
+        variant: "destructive",
+      });
+      return;
+    }
+    if (lines.some((line) => line.barcode === values.barcode.trim())) {
+      lineForm.setError("barcode", { message: "Barcode ini sudah ditambahkan ke kunjungan." });
+      return;
+    }
+    setLines((current) => [
+      ...current,
+      {
+        product: values.product.trim(),
+        barcode: values.barcode.trim(),
+        displayQuantity: Number(values.displayQuantity || 0),
+        secondaryDisplayQuantity: Number(values.secondaryDisplayQuantity || 0),
+        warehouseQuantity: Number(values.warehouseQuantity || 0),
+      },
+    ]);
+    visitForm.clearErrors("root");
+    lineForm.reset({
+      barcode: "",
+      product: "",
+      displayQuantity: "",
+      secondaryDisplayQuantity: "",
+      warehouseQuantity: "",
+    });
+  });
+
+  const createVisit = useCreateStockVisit();
+  const createRestock = useCreateStockRestock();
+  const deleteVisit = useDeleteStockVisit();
+  const deleteRestock = useDeleteStockRestock();
+  const updateRestockInvoice = useUpdateStockRestockInvoice();
+  const clearRestockInvoice = useClearStockRestockInvoice();
+
+  const onSaveVisit = visitForm.handleSubmit((values) => {
+    if (!activeStore) {
+      toast({
+        title: "Nama toko wajib diisi",
+        description: "Masukkan nama toko sebelum menyimpan kunjungan.",
+        variant: "destructive",
+      });
+      return;
+    }
+    if (lines.length === 0) {
+      visitForm.setError("root", { message: "Tambahkan minimal satu SKU ke kunjungan ini." });
+      return;
+    }
+    visitClientId.current ??= crypto.randomUUID();
+    createVisit.mutate(
+      {
+        data: {
+          clientId: visitClientId.current,
+          store: activeStore,
+          visitedAt: new Date(values.visitedAt).toISOString(),
+          lines,
+        },
+      },
+      {
+        onSuccess: (visit) => {
+          visitClientId.current = null;
+          setLines([]);
+          visitForm.reset({ visitedAt: localDateTime() });
+          refreshAffectedData();
+          toast({
+            title: "Kunjungan tersimpan",
+            description: `${visit.lines?.length ?? lines.length} SKU tersimpan untuk ${visit.store}. Penjualan dihitung setelah SKU memiliki kunjungan pembanding.`,
+          });
+        },
+        onError: (error) => {
+          toast({
+            title: "Kunjungan belum tersimpan",
+            description: error.message || "Periksa koneksi lalu coba lagi.",
+            variant: "destructive",
+          });
+        },
+      },
+    );
+  });
+
+  const onSaveRestock = restockForm.handleSubmit((values) => {
+    if (!activeStore) {
+      toast({
+        title: "Nama toko wajib diisi",
+        description: "Masukkan nama toko sebelum mencatat barang masuk.",
+        variant: "destructive",
+      });
+      return;
+    }
+    restockClientId.current ??= crypto.randomUUID();
+    createRestock.mutate(
+      {
+        data: {
+          clientId: restockClientId.current,
+          store: activeStore,
+          product: values.product.trim(),
+          barcode: values.barcode.trim(),
+          quantity: Number(values.quantity),
+          receivedAt: new Date(values.receivedAt).toISOString(),
+          ...(values.note.trim() ? { note: values.note.trim() } : {}),
+        },
+      },
+      {
+        onSuccess: (entry) => {
+          restockClientId.current = null;
+          restockForm.reset({ barcode: "", product: "", quantity: "", receivedAt: localDateTime(), note: "" });
+          refreshAffectedData();
+          toast({
+            title: "Barang masuk tersimpan",
+            description: `${entry.quantity} unit ${entry.product} dicatat untuk ${entry.store}.`,
+          });
+        },
+        onError: (error) => {
+          toast({
+            title: "Barang masuk belum tersimpan",
+            description: error.message || "Periksa koneksi lalu coba lagi.",
+            variant: "destructive",
+          });
+        },
+      },
+    );
+  });
+
+  const onSaveInvoice = (event: React.FormEvent<HTMLFormElement>, entry: StockRestock) => {
+    event.preventDefault();
+    if (!invoiceEditor || invoiceEditor.id !== entry.id) return;
+    const invoiceNumber = invoiceEditor.invoiceNumber.trim();
+    const quantityText = invoiceEditor.invoiceQuantity.trim();
+    if (!invoiceNumber || !/^\d+$/.test(quantityText) || !invoiceEditor.invoiceDate) {
+      toast({
+        title: "Data faktur belum lengkap",
+        description: "Isi nomor, tanggal, dan jumlah barang pada faktur.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const invoiceQuantity = Number(quantityText);
+    const difference = invoiceQuantity - entry.quantity;
+    updateRestockInvoice.mutate(
+      {
+        id: entry.id,
+        data: {
+          invoiceNumber,
+          invoiceQuantity,
+          invoiceDate: invoiceEditor.invoiceDate,
+        },
+      },
+      {
+        onSuccess: () => {
+          setInvoiceEditor(null);
+          refreshAffectedData();
+          toast({
+            title: "Faktur dicocokkan",
+            description: difference === 0
+              ? `Jumlah faktur sama dengan ${entry.quantity} unit yang diterima.`
+              : `Koreksi stok ${difference > 0 ? "+" : ""}${difference} unit dicatat tanpa menambahkan seluruh jumlah faktur lagi.`,
+          });
+        },
+        onError: (error) => {
+          toast({
+            title: "Faktur belum tersimpan",
+            description: error.message || "Periksa koneksi lalu coba lagi.",
+            variant: "destructive",
+          });
+        },
+      },
+    );
+  };
+
+  const onClearInvoice = (entry: StockRestock) => {
+    if (!window.confirm(`Lepas faktur ${entry.invoiceNumber} dari penerimaan ${entry.product}? Koreksi jumlah stoknya akan dibatalkan.`)) return;
+    clearRestockInvoice.mutate(
+      { id: entry.id },
+      {
+        onSuccess: () => {
+          refreshAffectedData();
+          toast({
+            title: "Faktur dilepas",
+            description: "Koreksi faktur dibatalkan; jumlah barang yang diterima tetap tercatat.",
+          });
+        },
+        onError: (error) => {
+          toast({
+            title: "Faktur belum dilepas",
+            description: error.message || "Periksa koneksi lalu coba lagi.",
+            variant: "destructive",
+          });
+        },
+      },
+    );
+  };
+
+  const onDeleteVisit = (id: number) => {
+    if (!window.confirm("Hapus kunjungan stok ini? Perhitungan penjualan interval terkait akan diperbarui.")) return;
+    deleteVisit.mutate({ id }, {
+      onSuccess: () => {
+        refreshAffectedData();
+        toast({ title: "Kunjungan dihapus", description: "Saldo dan perhitungan penjualan diperbarui." });
+      },
+      onError: (error) => toast({ title: "Kunjungan belum dihapus", description: error.message || "Coba lagi.", variant: "destructive" }),
+    });
+  };
+
+  const onDeleteRestock = (entry: StockRestock) => {
+    if (!window.confirm(`Hapus penerimaan ${entry.quantity} unit ${entry.product}? Saldo dan laporan akan dihitung ulang.`)) return;
+    deleteRestock.mutate({ id: entry.id }, {
+      onSuccess: () => {
+        refreshAffectedData();
+        toast({ title: "Barang masuk dihapus", description: "Saldo dan perhitungan penjualan diperbarui." });
+      },
+      onError: (error) => toast({ title: "Barang masuk belum dihapus", description: error.message || "Coba lagi.", variant: "destructive" }),
+    });
+  };
+
+  return (
+    <main className="min-h-[100dvh] bg-background px-4 py-6 text-foreground sm:px-6">
+      <div className="mx-auto max-w-5xl">
+        <header className="mb-6 flex flex-col gap-4 border-b border-border pb-5 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <Link href="/" className="mb-3 inline-flex items-center gap-1.5 text-sm font-medium text-muted-foreground hover:text-foreground" data-testid="link-back-stock">
+              <ArrowLeft className="h-4 w-4" /> Input stok
+            </Link>
+            <h1 className="font-serif text-3xl font-bold tracking-tight">Kunjungan & barang masuk</h1>
+            <p className="mt-1 max-w-xl text-sm text-muted-foreground">
+              Kunjungan mencatat jumlah fisik sebagai saldo dasar baru. Input stok dan barang masuk menambah saldo di antara kunjungan.
+            </p>
+          </div>
+          <Link href="/dashboard" className="inline-flex h-10 items-center justify-center rounded-lg border border-border bg-card px-4 text-sm font-semibold hover:bg-muted" data-testid="link-sales-dashboard">
+            Penjualan harian
+          </Link>
+        </header>
+
+        <section className="mb-5 grid gap-4 rounded-2xl border border-primary/15 bg-primary/[0.045] p-5 sm:grid-cols-[1fr_auto] sm:items-center" aria-label="Cara perhitungan saldo">
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-primary">Satu saldo terpadu</p>
+            <p className="mt-1 text-sm leading-6 text-foreground">
+              Saldo saat ini = hitungan fisik terakhir + input stok dan barang masuk setelahnya. Penjualan di antara kunjungan = stok sebelumnya + tambahan dalam interval − hitungan fisik terbaru.
+            </p>
+          </div>
+          <div className="rounded-xl border border-border bg-card px-4 py-3 text-sm sm:max-w-[300px]">
+            <p className="font-semibold">Contoh</p>
+            <p className="mt-1 text-xs leading-5 text-muted-foreground">
+              Input Display 10 + Secondary Display 5 = 15. Kunjungan mencatat 15; kunjungan berikutnya mencatat 2. Tanpa barang masuk, terjual 13.
+            </p>
+          </div>
+        </section>
+
+        <section className="mb-5 rounded-2xl border border-border bg-card p-5">
+          <label htmlFor="active-store" className="mb-2 flex items-center gap-2 text-sm font-semibold">
+            <Boxes className="h-4 w-4 text-primary" /> Toko aktif
+          </label>
+          <input
+            id="active-store"
+            list="known-stores"
+            value={storeName}
+            onChange={(event) => setStoreName(event.target.value)}
+            placeholder="Contoh: Toko Sentosa"
+            required
+            className="h-11 w-full rounded-xl border border-input bg-background px-3 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+            data-testid="input-active-store"
+          />
+          <datalist id="known-stores">
+            {(storesQuery.data ?? []).map((store) => <option key={store.name} value={store.name} />)}
+          </datalist>
+          <p className="mt-2 text-xs text-muted-foreground">
+            Catatan setiap toko tetap terpisah. Pilih atau ketik nama toko yang sama seperti kunjungan sebelumnya.
+          </p>
+        </section>
+
+        <div className="mb-5 grid grid-cols-2 gap-2 rounded-xl bg-muted p-1" role="tablist" aria-label="Jenis pencatatan">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === "visit"}
+            onClick={() => setActiveTab("visit")}
+            className={`inline-flex h-10 items-center justify-center gap-2 rounded-lg px-3 text-sm font-semibold transition ${activeTab === "visit" ? "bg-card text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+            data-testid="tab-stock-visit"
+          >
+            <ClipboardCheck className="h-4 w-4" /> Kunjungan SO
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === "restock"}
+            onClick={() => setActiveTab("restock")}
+            className={`inline-flex h-10 items-center justify-center gap-2 rounded-lg px-3 text-sm font-semibold transition ${activeTab === "restock" ? "bg-card text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+            data-testid="tab-stock-restock"
+          >
+            <PackagePlus className="h-4 w-4" /> Barang masuk
+          </button>
+        </div>
+
+        {activeTab === "visit" ? (
+          <div className="grid gap-5 lg:grid-cols-[1fr_0.9fr]">
+            <section className="rounded-2xl border border-border bg-card p-5">
+              <h2 className="font-serif text-xl font-bold">Catat satu kunjungan</h2>
+              <p className="mb-5 mt-1 text-sm text-muted-foreground">Tambahkan seluruh SKU yang dihitung pada kunjungan ke toko ini.</p>
+
+              <Form {...lineForm}>
+                <form onSubmit={onAddLine} className="space-y-4 border-b border-border pb-5">
+                  <FormField
+                    control={lineForm.control}
+                    name="barcode"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Barcode</FormLabel>
+                        <FormControl>
+                          <div className="flex gap-2">
+                            <input
+                              {...field}
+                              list="visit-product-barcodes"
+                              onKeyDown={(event) => {
+                                if (event.key === "Enter") event.preventDefault();
+                              }}
+                              onChange={(event) => {
+                                field.onChange(event);
+                                const match = productOptions.find((product) => product.barcode === event.target.value.trim());
+                                lineForm.setValue("product", match?.name ?? "", { shouldDirty: true, shouldValidate: false });
+                              }}
+                              placeholder="Scan atau masukkan barcode"
+                              className="h-11 min-w-0 flex-1 rounded-lg border border-input bg-background px-3 text-sm"
+                              data-testid="input-visit-barcode"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => setScannerTarget("visit")}
+                              className="inline-flex h-11 shrink-0 items-center gap-2 rounded-lg border border-border bg-card px-3 text-sm font-semibold hover:bg-muted"
+                              aria-label="Scan barcode kunjungan"
+                              data-testid="button-scan-visit-barcode"
+                            >
+                              <Camera className="h-4 w-4" /> Scan
+                            </button>
+                          </div>
+                        </FormControl>
+                        <datalist id="visit-product-barcodes">
+                          {productOptions.map((product) => <option key={product.barcode} value={product.barcode} label={product.name} />)}
+                        </datalist>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  <FormField
+                    control={lineForm.control}
+                    name="product"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Nama produk</FormLabel>
+                        <FormControl>
+                          <input {...field} placeholder="Nama produk" className="h-11 w-full rounded-lg border border-input bg-background px-3 text-sm" data-testid="input-visit-product-name" />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  <div className="grid grid-cols-3 gap-3">
+                    {([
+                      ["displayQuantity", "Display"],
+                      ["secondaryDisplayQuantity", "Secondary"],
+                      ["warehouseQuantity", "Gudang"],
+                    ] as const).map(([name, label]) => (
+                      <FormField
+                        key={name}
+                        control={lineForm.control}
+                        name={name}
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>{label}</FormLabel>
+                            <FormControl>
+                              <input
+                                {...field}
+                                type="number"
+                                min="0"
+                                step="1"
+                                inputMode="numeric"
+                                placeholder="0"
+                                className="h-11 w-full rounded-lg border border-input bg-background px-3 text-center text-base font-semibold"
+                                data-testid={`input-visit-${name}`}
+                              />
+                            </FormControl>
+                            {name === "displayQuantity" && <FormMessage />}
+                          </FormItem>
+                        )}
+                      />
+                    ))}
+                  </div>
+                  <button type="submit" className="inline-flex h-10 items-center gap-2 rounded-lg bg-secondary px-4 text-sm font-semibold text-secondary-foreground hover:opacity-90" data-testid="button-add-visit-line">
+                    <Plus className="h-4 w-4" /> Tambahkan SKU
+                  </button>
+                </form>
+              </Form>
+
+              {productOptions.length === 0 && (
+                <p className="mt-4 rounded-lg border border-dashed border-border p-3 text-sm text-muted-foreground" data-testid="status-no-products">
+                  Daftar produk masih kosong? Scan atau masukkan barcode, lalu isi nama produk secara manual.
+                </p>
+              )}
+
+              <div className="mt-5">
+                <div className="mb-3 flex items-center justify-between">
+                  <h3 className="text-sm font-semibold">SKU dalam kunjungan</h3>
+                  <span className="rounded-full bg-muted px-2.5 py-1 text-xs font-semibold" data-testid="text-visit-line-count">{lines.length} SKU</span>
+                </div>
+                {lines.length === 0 ? (
+                  <div className="rounded-xl border border-dashed border-border px-4 py-7 text-center text-sm text-muted-foreground" data-testid="status-visit-lines-empty">
+                    Belum ada SKU ditambahkan.
+                  </div>
+                ) : (
+                  <ul className="space-y-2">
+                    {lines.map((line) => {
+                      const total = line.displayQuantity + line.secondaryDisplayQuantity + line.warehouseQuantity;
+                      return (
+                        <li key={line.barcode} className="flex items-center justify-between gap-3 rounded-xl border border-border p-3" data-testid={`row-visit-line-${line.barcode}`}>
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-semibold">{line.product}</p>
+                            <p className="mt-0.5 font-mono text-xs text-muted-foreground">{line.barcode} · Display {line.displayQuantity} · Secondary {line.secondaryDisplayQuantity} · Gudang {line.warehouseQuantity}</p>
+                          </div>
+                          <div className="flex shrink-0 items-center gap-2">
+                            <span className="font-mono text-lg font-bold">{total}</span>
+                            <button
+                              type="button"
+                              onClick={() => setLines((current) => current.filter((item) => item.barcode !== line.barcode))}
+                              className="rounded-lg p-2 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                              aria-label={`Hapus ${line.product}`}
+                              data-testid={`button-remove-visit-line-${line.barcode}`}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </div>
+
+              <Form {...visitForm}>
+                <form onSubmit={onSaveVisit} className="mt-5 border-t border-border pt-5">
+                  <FormField
+                    control={visitForm.control}
+                    name="visitedAt"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Waktu kunjungan</FormLabel>
+                        <FormControl>
+                          <input {...field} type="datetime-local" className="h-11 w-full rounded-lg border border-input bg-background px-3 text-sm" data-testid="input-visit-time" />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  {visitForm.formState.errors.root?.message && (
+                    <p className="mt-2 text-sm text-destructive" role="alert" data-testid="status-visit-form-error">{visitForm.formState.errors.root.message}</p>
+                  )}
+                  <button
+                    type="submit"
+                    disabled={createVisit.isPending || lines.length === 0 || !activeStore}
+                    className="mt-4 inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 text-sm font-semibold text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                    data-testid="button-save-visit"
+                  >
+                    <ClipboardCheck className="h-4 w-4" />
+                    {createVisit.isPending ? "Menyimpan kunjungan..." : "Simpan kunjungan SO"}
+                  </button>
+                </form>
+              </Form>
+            </section>
+
+            <section className="rounded-2xl border border-border bg-card p-5">
+              <h2 className="font-serif text-xl font-bold">Kunjungan terakhir</h2>
+              <p className="mb-4 mt-1 text-sm text-muted-foreground">
+                {activeStore ? `Riwayat ${activeStore}` : "Pilih toko untuk membatasi daftar ini."}
+              </p>
+              {visitHistoryQuery.isLoading ? (
+                <div className="space-y-3 py-3" aria-label="Memuat kunjungan">
+                  <div className="h-16 animate-pulse rounded-xl bg-muted" />
+                  <div className="h-16 animate-pulse rounded-xl bg-muted" />
+                </div>
+              ) : visitHistoryQuery.isError ? (
+                <div className="rounded-xl border border-destructive/25 bg-destructive/5 px-4 py-6 text-center" role="alert">
+                  <p className="text-sm font-semibold">Riwayat kunjungan tidak dapat dimuat</p>
+                  <button type="button" onClick={() => visitHistoryQuery.refetch()} className="mt-2 text-xs font-semibold text-primary underline underline-offset-2">Coba lagi</button>
+                </div>
+              ) : (visitHistoryQuery.data ?? []).length === 0 ? (
+                <div className="rounded-xl border border-dashed border-border px-4 py-7 text-center text-sm text-muted-foreground" data-testid="status-visits-empty">
+                  Belum ada kunjungan SO tersimpan untuk toko ini.
+                </div>
+              ) : (
+                <ul className="space-y-3">
+                  {(visitHistoryQuery.data ?? []).slice(0, 10).map((visit) => (
+                    <li key={visit.id} className="rounded-xl border border-border p-3" data-testid={`row-visit-history-${visit.id}`}>
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-semibold">{visit.store}</p>
+                          <p className="mt-1 text-xs text-muted-foreground">{formatDate(visit.visitedAt)}</p>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-2">
+                          <span className="rounded-full bg-muted px-2.5 py-1 text-xs font-semibold">{visit.lines?.length ?? 0} SKU</span>
+                          <button type="button" onClick={() => onDeleteVisit(visit.id)} disabled={deleteVisit.isPending} className="rounded-lg p-2 text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:opacity-50" aria-label={`Hapus kunjungan ${formatDate(visit.visitedAt)}`} data-testid={`button-delete-visit-${visit.id}`}><Trash2 className="h-4 w-4" /></button>
+                        </div>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          </div>
+        ) : (
+          <div className="grid gap-5 lg:grid-cols-[0.9fr_1fr]">
+            <section className="rounded-2xl border border-border bg-card p-5">
+              <h2 className="font-serif text-xl font-bold">Catat barang masuk</h2>
+              <p className="mb-5 mt-1 text-sm text-muted-foreground">
+                Gunakan waktu barang benar-benar diterima. Jika waktunya sama dengan kunjungan SO, urutan transaksi tersimpan menentukan apakah barang sudah tercakup dalam hitungan fisik.
+              </p>
+              <Form {...restockForm}>
+                <form onSubmit={onSaveRestock} className="space-y-4">
+                  <FormField
+                    control={restockForm.control}
+                    name="barcode"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Barcode</FormLabel>
+                        <FormControl>
+                          <div className="flex gap-2">
+                            <input
+                              {...field}
+                              list="restock-product-barcodes"
+                              onKeyDown={(event) => {
+                                if (event.key === "Enter") event.preventDefault();
+                              }}
+                              onChange={(event) => {
+                                field.onChange(event);
+                                const match = productOptions.find((product) => product.barcode === event.target.value.trim());
+                                restockForm.setValue("product", match?.name ?? "", { shouldDirty: true, shouldValidate: false });
+                              }}
+                              placeholder="Scan atau masukkan barcode"
+                              className="h-11 min-w-0 flex-1 rounded-lg border border-input bg-background px-3 text-sm"
+                              data-testid="input-restock-barcode"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => setScannerTarget("restock")}
+                              className="inline-flex h-11 shrink-0 items-center gap-2 rounded-lg border border-border bg-card px-3 text-sm font-semibold hover:bg-muted"
+                              aria-label="Scan barcode barang masuk"
+                              data-testid="button-scan-restock-barcode"
+                            >
+                              <Camera className="h-4 w-4" /> Scan
+                            </button>
+                          </div>
+                        </FormControl>
+                        <datalist id="restock-product-barcodes">
+                          {productOptions.map((product) => <option key={product.barcode} value={product.barcode} label={product.name} />)}
+                        </datalist>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  <FormField
+                    control={restockForm.control}
+                    name="product"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Nama produk</FormLabel>
+                        <FormControl>
+                          <input {...field} placeholder="Nama produk" className="h-11 w-full rounded-lg border border-input bg-background px-3 text-sm" data-testid="input-restock-product-name" />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  {productOptions.length === 0 && (
+                    <p className="-mt-2 text-xs text-muted-foreground">
+                      Daftar produk kosong? Masukkan barcode sendiri dan isi nama produk untuk melanjutkan.
+                    </p>
+                  )}
+                  <FormField
+                    control={restockForm.control}
+                    name="quantity"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Jumlah diterima</FormLabel>
+                        <FormControl>
+                          <input {...field} type="number" min="1" step="1" inputMode="numeric" placeholder="Contoh: 12" className="h-11 w-full rounded-lg border border-input bg-background px-3 text-sm" data-testid="input-restock-quantity" />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  <FormField
+                    control={restockForm.control}
+                    name="receivedAt"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Waktu diterima</FormLabel>
+                        <FormControl>
+                          <input {...field} type="datetime-local" className="h-11 w-full rounded-lg border border-input bg-background px-3 text-sm" data-testid="input-restock-time" />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  <FormField
+                    control={restockForm.control}
+                    name="note"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Catatan (opsional)</FormLabel>
+                        <FormControl>
+                          <textarea {...field} rows={3} maxLength={500} placeholder="Contoh: pengiriman pagi" className="w-full resize-y rounded-lg border border-input bg-background px-3 py-2 text-sm" data-testid="input-restock-note" />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  <button
+                    type="submit"
+                    disabled={createRestock.isPending || !activeStore}
+                    className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 text-sm font-semibold text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                    data-testid="button-save-restock"
+                  >
+                    <PackagePlus className="h-4 w-4" />
+                    {createRestock.isPending ? "Menyimpan barang masuk..." : "Simpan barang masuk"}
+                  </button>
+                </form>
+              </Form>
+            </section>
+
+            <section className="rounded-2xl border border-border bg-card p-5">
+              <h2 className="font-serif text-xl font-bold">Barang masuk terakhir</h2>
+              <p className="mb-4 mt-1 text-sm text-muted-foreground">
+                {activeStore ? `Riwayat ${activeStore}` : "Semua toko; cocokkan faktur per barang yang diterima. Setiap baris faktur dapat memakai nomor yang sama."}
+              </p>
+              <label className="mb-4 block">
+                <span className="sr-only">Cari barang masuk atau faktur</span>
+                <input
+                  type="search"
+                  value={restockSearch}
+                  onChange={(event) => setRestockSearch(event.target.value)}
+                  placeholder="Cari produk, barcode, toko, atau nomor faktur"
+                  className="h-10 w-full rounded-lg border border-input bg-background px-3 text-sm"
+                  data-testid="input-search-restocks"
+                />
+              </label>
+              {restockHistoryQuery.isLoading ? (
+                <div className="space-y-3 py-3" aria-label="Memuat barang masuk">
+                  <div className="h-16 animate-pulse rounded-xl bg-muted" />
+                  <div className="h-16 animate-pulse rounded-xl bg-muted" />
+                </div>
+              ) : restockHistoryQuery.isError ? (
+                <div className="rounded-xl border border-destructive/25 bg-destructive/5 px-4 py-6 text-center" role="alert">
+                  <p className="text-sm font-semibold">Riwayat barang masuk tidak dapat dimuat</p>
+                  <button type="button" onClick={() => restockHistoryQuery.refetch()} className="mt-2 text-xs font-semibold text-primary underline underline-offset-2">Coba lagi</button>
+                </div>
+              ) : visibleRestocks.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-border px-4 py-7 text-center text-sm text-muted-foreground" data-testid="status-restocks-empty">
+                  {(restockHistoryQuery.data ?? []).length === 0
+                    ? "Belum ada barang masuk tersimpan."
+                    : "Tidak ada barang masuk yang cocok dengan pencarian."}
+                </div>
+              ) : (
+                <>
+                <ul className="max-h-[44rem] space-y-3 overflow-y-auto pr-1">
+                  {visibleRestocks.map((entry) => {
+                    const invoiceDifference = (entry.invoiceQuantity ?? entry.quantity) - entry.quantity;
+                    return (
+                    <li key={entry.id} className="rounded-xl border border-border p-3" data-testid={`row-restock-history-${entry.id}`}>
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-semibold">{entry.product} <span className="font-mono text-xs font-normal text-muted-foreground">· {entry.barcode}</span></p>
+                          <p className="mt-1 text-xs text-muted-foreground">{entry.store} · {formatDate(entry.receivedAt)}</p>
+                          {entry.note && <p className="mt-1 text-xs text-muted-foreground">{entry.note}</p>}
+                          <p className="mt-2 text-xs text-muted-foreground">
+                            Diterima {entry.quantity} unit · jumlah efektif {entry.effectiveQuantity} unit
+                          </p>
+                          {entry.invoiceNumber && (
+                            <p className="mt-1 text-xs text-muted-foreground">
+                              Faktur {entry.invoiceNumber} · {entry.invoiceDate} · koreksi stok {invoiceDifference > 0 ? "+" : ""}{invoiceDifference} unit
+                            </p>
+                          )}
+                        </div>
+                        <div className="flex shrink-0 flex-col items-end gap-2">
+                          <span className="font-mono text-lg font-bold">+{entry.effectiveQuantity}</span>
+                          <div className="flex flex-wrap justify-end gap-2">
+                            <button
+                              type="button"
+                              onClick={() => onDeleteRestock(entry)}
+                              disabled={deleteRestock.isPending}
+                              className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-destructive/30 px-2.5 text-xs font-semibold text-destructive hover:bg-destructive/5 disabled:opacity-50"
+                              data-testid={`button-delete-restock-${entry.id}`}
+                            >
+                              <Trash2 className="h-3.5 w-3.5" /> Hapus
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setInvoiceEditor({
+                                id: entry.id,
+                                invoiceNumber: entry.invoiceNumber ?? "",
+                                invoiceQuantity: String(entry.invoiceQuantity ?? entry.quantity),
+                                invoiceDate: entry.invoiceDate ?? jakartaDateInput(),
+                              })}
+                              className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border px-2.5 text-xs font-semibold hover:bg-muted"
+                              data-testid={`button-match-invoice-${entry.id}`}
+                            >
+                              <FileText className="h-3.5 w-3.5" /> {entry.invoiceNumber ? "Ubah faktur" : "Cocokkan faktur"}
+                            </button>
+                            {entry.invoiceNumber && (
+                              <button
+                                type="button"
+                                onClick={() => onClearInvoice(entry)}
+                                disabled={clearRestockInvoice.isPending}
+                                className="inline-flex h-8 items-center rounded-lg border border-destructive/30 px-2.5 text-xs font-semibold text-destructive hover:bg-destructive/5 disabled:opacity-50"
+                                data-testid={`button-clear-invoice-${entry.id}`}
+                              >
+                                Lepas
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                      {invoiceEditor?.id === entry.id && (
+                        <form onSubmit={(event) => onSaveInvoice(event, entry)} className="mt-4 grid gap-3 border-t border-border pt-4 sm:grid-cols-3" data-testid={`form-match-invoice-${entry.id}`}>
+                          <label className="text-xs font-semibold">
+                            Nomor faktur
+                            <input
+                              value={invoiceEditor.invoiceNumber}
+                              onChange={(event) => setInvoiceEditor({ ...invoiceEditor, invoiceNumber: event.target.value })}
+                              maxLength={120}
+                              required
+                              className="mt-1 h-10 w-full rounded-lg border border-input bg-background px-3 text-sm font-normal"
+                              data-testid={`input-invoice-number-${entry.id}`}
+                            />
+                          </label>
+                          <label className="text-xs font-semibold">
+                            Jumlah pada faktur
+                            <input
+                              type="number"
+                              min="0"
+                              step="1"
+                              inputMode="numeric"
+                              value={invoiceEditor.invoiceQuantity}
+                              onChange={(event) => setInvoiceEditor({ ...invoiceEditor, invoiceQuantity: event.target.value })}
+                              required
+                              className="mt-1 h-10 w-full rounded-lg border border-input bg-background px-3 text-sm font-normal"
+                              data-testid={`input-invoice-quantity-${entry.id}`}
+                            />
+                          </label>
+                          <label className="text-xs font-semibold">
+                            Tanggal faktur
+                            <input
+                              type="date"
+                              value={invoiceEditor.invoiceDate}
+                              onChange={(event) => setInvoiceEditor({ ...invoiceEditor, invoiceDate: event.target.value })}
+                              required
+                              className="mt-1 h-10 w-full rounded-lg border border-input bg-background px-3 text-sm font-normal"
+                              data-testid={`input-invoice-date-${entry.id}`}
+                            />
+                          </label>
+                          <p className="text-xs text-muted-foreground sm:col-span-3">
+                            Penerimaan awal {entry.quantity} unit tetap tersimpan. Selisih faktur akan dikoreksi saat faktur dicatat, tanpa menambahkan jumlah penuh untuk kedua kalinya.
+                          </p>
+                          <div className="flex gap-2 sm:col-span-3">
+                            <button
+                              type="submit"
+                              disabled={updateRestockInvoice.isPending || clearRestockInvoice.isPending}
+                              className="inline-flex h-9 items-center gap-2 rounded-lg bg-primary px-3 text-xs font-semibold text-primary-foreground disabled:opacity-50"
+                              data-testid={`button-save-invoice-${entry.id}`}
+                            >
+                              {updateRestockInvoice.isPending ? "Menyimpan..." : "Simpan kecocokan"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setInvoiceEditor(null)}
+                              className="inline-flex h-9 items-center rounded-lg border border-border px-3 text-xs font-semibold hover:bg-muted"
+                            >
+                              Batal
+                            </button>
+                          </div>
+                        </form>
+                      )}
+                    </li>
+                  );
+                  })}
+                </ul>
+                <p className="mt-3 text-xs text-muted-foreground" data-testid="text-restock-history-count">
+                  {visibleRestocks.length} dari {(restockHistoryQuery.data ?? []).length} catatan barang masuk ditampilkan
+                  {(restockHistoryQuery.data ?? []).length === 500 ? " · menampilkan 500 catatan terbaru" : ""}
+                </p>
+                </>
+              )}
+            </section>
+          </div>
+        )}
+      </div>
+      <BarcodeScanner
+        isOpen={scannerTarget !== null}
+        onClose={() => setScannerTarget(null)}
+        onScanSuccess={handleScanSuccess}
+      />
+    </main>
+  );
+}
