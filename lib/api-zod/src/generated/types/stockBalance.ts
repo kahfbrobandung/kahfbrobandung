@@ -10,7 +10,7 @@ export interface StockBalance {
   store: string;
   product: string;
   barcode: string;
-  /** Current balance after applying stock entries, incoming goods, and the latest physical visit. */
+  /** Current balance from signed stock ledger movements and physical-count corrections. */
   totalQuantity: number;
   displayQuantity: number;
   secondaryDisplayQuantity: number;

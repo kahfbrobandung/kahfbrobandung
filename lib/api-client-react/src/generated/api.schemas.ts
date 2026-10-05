@@ -45,6 +45,16 @@ export interface StockEntryInput {
   warehouseQuantity: number;
 }
 
+export type StockEntrySourceType = typeof StockEntrySourceType[keyof typeof StockEntrySourceType];
+
+
+export const StockEntrySourceType = {
+  manual: 'manual',
+  restock: 'restock',
+  restock_invoice: 'restock_invoice',
+  visit_correction: 'visit_correction',
+} as const;
+
 export type StockEntrySyncStatus = typeof StockEntrySyncStatus[keyof typeof StockEntrySyncStatus];
 
 
@@ -52,23 +62,36 @@ export const StockEntrySyncStatus = {
   pending: 'pending',
   synced: 'synced',
   failed: 'failed',
+  local: 'local',
 } as const;
 
-export type StockEntry = StockEntryInput & ({
+export interface StockEntry {
   id: number;
+  clientId: string;
+  store: string;
+  transaction: string;
+  product: string;
+  /** Signed movement quantity in the ledger; sales and physical corrections may be negative. */
+  quantity: number;
+  barcode: string;
+  displayQuantity: number;
+  secondaryDisplayQuantity: number;
+  warehouseQuantity: number;
+  sourceType: StockEntrySourceType;
+  occurredAt: string;
   syncStatus: StockEntrySyncStatus;
   /** @nullable */
   syncError: string | null;
   createdAt: string;
   /** @nullable */
   syncedAt: string | null;
-});
+}
 
 export interface StockBalance {
   store: string;
   product: string;
   barcode: string;
-  /** Current balance after applying stock entries, incoming goods, and the latest physical visit. */
+  /** Current balance from signed stock ledger movements and physical-count corrections. */
   totalQuantity: number;
   displayQuantity: number;
   secondaryDisplayQuantity: number;

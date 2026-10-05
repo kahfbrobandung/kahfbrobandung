@@ -5,15 +5,27 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
-import type { StockEntryInput } from './stockEntryInput';
+import type { StockEntrySourceType } from './stockEntrySourceType';
 import type { StockEntrySyncStatus } from './stockEntrySyncStatus';
 
-export type StockEntry = StockEntryInput & ({
+export interface StockEntry {
   id: number;
+  clientId: string;
+  store: string;
+  transaction: string;
+  product: string;
+  /** Signed movement quantity in the ledger; sales and physical corrections may be negative. */
+  quantity: number;
+  barcode: string;
+  displayQuantity: number;
+  secondaryDisplayQuantity: number;
+  warehouseQuantity: number;
+  sourceType: StockEntrySourceType;
+  occurredAt: Date;
   syncStatus: StockEntrySyncStatus;
   /** @nullable */
   syncError: string | null;
   createdAt: Date;
   /** @nullable */
   syncedAt: Date | null;
-});
+}

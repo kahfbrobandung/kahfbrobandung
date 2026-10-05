@@ -1,5 +1,6 @@
 import app from "./app";
 import { logger } from "./lib/logger";
+import { backfillLegacyStockLedger } from "./lib/stock-ledger";
 
 const rawPort = process.env["PORT"];
 
@@ -15,11 +16,23 @@ if (Number.isNaN(port) || port <= 0) {
   throw new Error(`Invalid PORT value: "${rawPort}"`);
 }
 
-app.listen(port, (err) => {
-  if (err) {
-    logger.error({ err }, "Error listening on port");
-    process.exit(1);
+async function startServer() {
+  const backfill = await backfillLegacyStockLedger();
+  if (backfill.entriesAdded > 0) {
+    logger.info(backfill, "Legacy stock movements copied into the shared ledger");
   }
 
-  logger.info({ port }, "Server listening");
+  app.listen(port, (err) => {
+    if (err) {
+      logger.error({ err }, "Error listening on port");
+      process.exit(1);
+    }
+
+    logger.info({ port }, "Server listening");
+  });
+}
+
+void startServer().catch((err) => {
+  logger.error({ err }, "Unable to initialize stock ledger");
+  process.exit(1);
 });

@@ -457,7 +457,7 @@ export default function Operations() {
             </Link>
             <h1 className="font-serif text-3xl font-bold tracking-tight">Kunjungan & barang masuk</h1>
             <p className="mt-1 max-w-xl text-sm text-muted-foreground">
-              Kunjungan mencatat jumlah fisik sebagai saldo dasar baru. Input stok dan barang masuk menambah saldo di antara kunjungan.
+              Kunjungan mencatat jumlah fisik sebagai koreksi selisih di buku stok yang sama. Hitungan fisik tidak ditambahkan ulang sebagai stok baru.
             </p>
           </div>
           <Link href="/dashboard" className="inline-flex h-10 items-center justify-center rounded-lg border border-border bg-card px-4 text-sm font-semibold hover:bg-muted" data-testid="link-sales-dashboard">
@@ -469,13 +469,13 @@ export default function Operations() {
           <div>
             <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-primary">Satu saldo terpadu</p>
             <p className="mt-1 text-sm leading-6 text-foreground">
-              Saldo saat ini = hitungan fisik terakhir + input stok dan barang masuk setelahnya. Penjualan di antara kunjungan = stok sebelumnya + tambahan dalam interval − hitungan fisik terbaru.
+              Semua pergerakan tersimpan dalam satu ledger. Kunjungan menghasilkan selisih terhadap saldo buku; barang masuk menambah saldo dan penjualan menguranginya.
             </p>
           </div>
           <div className="rounded-xl border border-border bg-card px-4 py-3 text-sm sm:max-w-[300px]">
             <p className="font-semibold">Contoh</p>
             <p className="mt-1 text-xs leading-5 text-muted-foreground">
-              Input Display 10 + Secondary Display 5 = 15. Kunjungan mencatat 15; kunjungan berikutnya mencatat 2. Tanpa barang masuk, terjual 13.
+              Saldo buku 10, lalu hitungan fisik 12: ledger mencatat koreksi +2 dan saldo menjadi 12, bukan 22.
             </p>
           </div>
         </section>

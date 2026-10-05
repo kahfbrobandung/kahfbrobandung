@@ -33,7 +33,7 @@ paths:
       operationId: listStockEntries
       tags: [stock]
       summary: List stored stock entries
-      description: Returns the latest stock transactions stored on the server.
+      description: Returns the latest movements from the shared stock ledger, including manual entries, goods received, invoice adjustments, and physical-count corrections.
       parameters:
         - name: store
           in: query
@@ -86,7 +86,7 @@ paths:
       operationId: listStockBalances
       tags: [stock]
       summary: List aggregated stock balances
-      description: Returns one unified on-hand balance per store and barcode. The latest visit is the physical-count baseline; stock inputs and incoming goods after that visit adjust it. If no visit exists, all stock inputs and incoming goods contribute to the balance. When limit is omitted, all product balances for the store are returned.
+      description: Returns one on-hand balance per store and barcode from the shared stock ledger. Physical visits are signed corrections to the counted quantity; incoming goods and other stock movements are ledger entries. When limit is omitted, all product balances for the store are returned.
       parameters:
         - name: store
           in: query
@@ -376,7 +376,7 @@ paths:
       operationId: getSalesActivity
       tags: [sales]
       summary: Get a combined store activity history
-      description: Combines stock input transactions, stock opname visits, and incoming stock records without changing the sales estimate formula.
+      description: Returns recent movements from the shared ledger, including input, sales, goods received, invoice adjustments, and physical-count corrections.
       parameters:
         - name: from
           in: query
@@ -424,8 +424,8 @@ paths:
     delete:
       operationId: deleteStockEntry
       tags: [stock]
-      summary: Delete a stock input transaction from the server
-      description: Removes the server record. A row already mirrored to Google Sheets may remain there.
+      summary: Delete a manually entered stock transaction
+      description: Removes a manual ledger movement. Visit and goods-in movements must be removed from their source history.
       parameters:
         - name: id
           in: path
@@ -448,6 +448,12 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: Stock entry not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Ledger movement must be removed from its source history
           content:
             application/json:
               schema:
@@ -589,29 +595,63 @@ components:
         - secondaryDisplayQuantity
         - warehouseQuantity
     StockEntry:
-      allOf:
-        - $ref: "#/components/schemas/StockEntryInput"
-        - type: object
-          properties:
-            id:
-              type: integer
-            syncStatus:
-              type: string
-              enum: [pending, synced, failed]
-            syncError:
-              type: ["string", "null"]
-            createdAt:
-              type: string
-              format: date-time
-            syncedAt:
-              type: ["string", "null"]
-              format: date-time
-          required:
-            - id
-            - syncStatus
-            - syncError
-            - createdAt
-            - syncedAt
+      type: object
+      properties:
+        id:
+          type: integer
+        clientId:
+          type: string
+        store:
+          type: string
+        transaction:
+          type: string
+        product:
+          type: string
+        quantity:
+          type: integer
+          description: Signed movement quantity in the ledger; sales and physical corrections may be negative.
+        barcode:
+          type: string
+        displayQuantity:
+          type: integer
+        secondaryDisplayQuantity:
+          type: integer
+        warehouseQuantity:
+          type: integer
+        sourceType:
+          type: string
+          enum: [manual, restock, restock_invoice, visit_correction]
+        occurredAt:
+          type: string
+          format: date-time
+        syncStatus:
+          type: string
+          enum: [pending, synced, failed, local]
+        syncError:
+          type: ["string", "null"]
+        createdAt:
+          type: string
+          format: date-time
+        syncedAt:
+          type: ["string", "null"]
+          format: date-time
+      required:
+        - id
+        - clientId
+        - store
+        - transaction
+        - product
+        - quantity
+        - barcode
+        - displayQuantity
+        - secondaryDisplayQuantity
+        - warehouseQuantity
+        - sourceType
+        - occurredAt
+        - syncStatus
+        - syncError
+        - createdAt
+        - syncedAt
     StockBalance:
       type: object
       properties:
@@ -623,7 +663,7 @@ components:
           type: string
         totalQuantity:
           type: integer
-          description: Current balance after applying stock entries, incoming goods, and the latest physical visit.
+          description: Current balance from signed stock ledger movements and physical-count corrections.
         displayQuantity:
           type: integer
         secondaryDisplayQuantity:

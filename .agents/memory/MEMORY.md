@@ -1,1 +1,1 @@
-- [Stock opname semantics](stock-opname-semantics.md) — Physical visits set the baseline; derive sales per interval using restocks by received time and keep manual sales separate.
+- [Stock opname semantics](stock-opname-semantics.md) — One signed ledger anchors inputs, receipts, sales, and physical-count corrections; visits remain authoritative snapshots.

@@ -10,13 +10,23 @@ import {
 } from "@workspace/api-zod";
 import { db, stockEntriesTable, type StockEntry } from "@workspace/db";
 import { logger } from "../lib/logger";
+import { reconcileStockLedger } from "../lib/stock-ledger";
 import { syncStockEntryToSpreadsheet } from "../lib/stock-sync";
 
 const router: IRouter = Router();
 
 function responseData(entry: StockEntry) {
+  const {
+    sourceId: _sourceId,
+    countedQuantity: _countedQuantity,
+    countedDisplayQuantity: _countedDisplayQuantity,
+    countedSecondaryDisplayQuantity: _countedSecondaryDisplayQuantity,
+    countedWarehouseQuantity: _countedWarehouseQuantity,
+    ...publicEntry
+  } = entry;
   return {
-    ...entry,
+    ...publicEntry,
+    occurredAt: (entry.occurredAt ?? entry.createdAt).toISOString(),
     createdAt: entry.createdAt.toISOString(),
     syncedAt: entry.syncedAt?.toISOString() ?? null,
   };
@@ -68,7 +78,11 @@ router.get("/stock-entries", async (req, res) => {
     .select()
     .from(stockEntriesTable)
     .where(conditions.length ? and(...conditions) : undefined)
-    .orderBy(desc(stockEntriesTable.createdAt))
+    .orderBy(
+      desc(sql`COALESCE(${stockEntriesTable.occurredAt}, ${stockEntriesTable.createdAt})`),
+      desc(stockEntriesTable.createdAt),
+      desc(stockEntriesTable.id),
+    )
     .limit(parsed.data.limit ?? 25);
 
   res.json(entries.map(responseData));
@@ -81,17 +95,30 @@ router.delete("/stock-entries/:id", async (req, res): Promise<void> => {
     return;
   }
 
-  const [deleted] = await db
-    .delete(stockEntriesTable)
-    .where(eq(stockEntriesTable.id, parsed.data.id))
-    .returning({ id: stockEntriesTable.id });
-  if (!deleted) {
+  const outcome = await db.transaction(async (tx) => {
+    const [entry] = await tx
+      .select()
+      .from(stockEntriesTable)
+      .where(eq(stockEntriesTable.id, parsed.data.id))
+      .limit(1);
+    if (!entry) return { kind: "missing" as const };
+    if (entry.sourceType !== "manual") return { kind: "managed" as const };
+
+    await tx.delete(stockEntriesTable).where(eq(stockEntriesTable.id, entry.id));
+    await reconcileStockLedger(tx, entry.store, entry.barcode);
+    return { kind: "deleted" as const, id: entry.id };
+  });
+  if (outcome.kind === "missing") {
     res.status(404).json({ error: "Transaksi stok tidak ditemukan." });
+    return;
+  }
+  if (outcome.kind === "managed") {
+    res.status(409).json({ error: "Transaksi ini dikelola dari riwayat kunjungan atau barang masuk." });
     return;
   }
 
   res.json(DeleteStockEntryResponse.parse({
-    id: deleted.id,
+    id: outcome.id,
     spreadsheetMirrorMayRemain: true,
   }));
 });
@@ -110,7 +137,7 @@ router.get("/stock-balances", async (req, res) => {
   }
 
   const storeKey = requestedStore.normalize("NFKC").replace(/\s+/g, " ").toLocaleLowerCase("id-ID");
-  type UnifiedBalanceRow = {
+  type LedgerBalanceRow = {
     store: string;
     product: string;
     barcode: string;
@@ -121,146 +148,73 @@ router.get("/stock-balances", async (req, res) => {
     entryCount: number | string;
     updatedAt: Date | string;
   };
-  const result = await db.execute<UnifiedBalanceRow>(sql`
-    WITH all_keys AS (
-      SELECT
-        lower(regexp_replace(trim(e.store), '[[:space:]]+', ' ', 'g')) AS store_key,
-        e.store AS store,
-        e.product,
-        e.barcode,
-        e.created_at AS occurred_at
-      FROM stock_entries e
-      WHERE lower(regexp_replace(trim(e.store), '[[:space:]]+', ' ', 'g')) = ${storeKey}
-      UNION ALL
-      SELECT s.normalized_name, s.name, l.product, l.barcode, v.visited_at
-      FROM stock_visits v
-      INNER JOIN stores s ON s.id = v.store_id
-      INNER JOIN stocktake_lines l ON l.visit_id = v.id
-      WHERE s.normalized_name = ${storeKey}
-      UNION ALL
-      SELECT s.normalized_name, s.name, r.product, r.barcode, r.received_at
-      FROM stock_restocks r
-      INNER JOIN stores s ON s.id = r.store_id
-      WHERE s.normalized_name = ${storeKey}
-    ),
-    key_rows AS (
-      SELECT DISTINCT ON (store_key, barcode)
-        store_key,
-        store,
-        product,
-        barcode
-      FROM all_keys
-      ORDER BY store_key, barcode, occurred_at DESC, product ASC
-    ),
-    latest_visits AS (
-      SELECT DISTINCT ON (s.normalized_name, l.barcode)
-        s.normalized_name AS store_key,
-        s.name AS store,
-        l.product,
-        l.barcode,
-        v.id AS visit_id,
-        v.visited_at,
-        v.created_at AS visit_created_at,
-        l.total_quantity,
-        l.display_quantity,
-        l.secondary_display_quantity,
-        l.warehouse_quantity
-      FROM stock_visits v
-      INNER JOIN stores s ON s.id = v.store_id
-      INNER JOIN stocktake_lines l ON l.visit_id = v.id
-      WHERE s.normalized_name = ${storeKey}
-      ORDER BY s.normalized_name, l.barcode, v.visited_at DESC, v.id DESC
-    ),
-    entry_totals AS (
+  const result = await db.execute<LedgerBalanceRow>(sql`
+    WITH ledger_totals AS (
       SELECT
         lower(regexp_replace(trim(e.store), '[[:space:]]+', ' ', 'g')) AS store_key,
         e.barcode,
-        SUM(CASE WHEN lower(trim(e.transaction)) = 'penjualan' THEN -e.quantity ELSE e.quantity END) AS all_quantity,
         SUM(
           CASE
-            WHEN lv.visit_id IS NULL OR e.created_at > lv.visited_at
-              THEN CASE WHEN lower(trim(e.transaction)) = 'penjualan' THEN -e.quantity ELSE e.quantity END
-            ELSE 0
+            WHEN e.source_type IN ('visit_correction', 'restock_invoice') THEN e.quantity
+            WHEN lower(trim(e.transaction)) = 'penjualan' THEN -e.quantity
+            ELSE e.quantity
           END
-        ) AS since_visit_quantity,
-        SUM(CASE WHEN lv.visit_id IS NULL OR e.created_at > lv.visited_at THEN e.display_quantity ELSE 0 END) AS display_quantity,
-        SUM(CASE WHEN lv.visit_id IS NULL OR e.created_at > lv.visited_at THEN e.secondary_display_quantity ELSE 0 END) AS secondary_display_quantity,
-        SUM(CASE WHEN lv.visit_id IS NULL OR e.created_at > lv.visited_at THEN e.warehouse_quantity ELSE 0 END) AS warehouse_quantity,
+        ) AS total_quantity,
+        SUM(
+          CASE
+            WHEN e.source_type IN ('visit_correction', 'restock_invoice') THEN e.display_quantity
+            WHEN lower(trim(e.transaction)) = 'penjualan' THEN -e.display_quantity
+            ELSE e.display_quantity
+          END
+        ) AS display_quantity,
+        SUM(
+          CASE
+            WHEN e.source_type IN ('visit_correction', 'restock_invoice') THEN e.secondary_display_quantity
+            WHEN lower(trim(e.transaction)) = 'penjualan' THEN -e.secondary_display_quantity
+            ELSE e.secondary_display_quantity
+          END
+        ) AS secondary_display_quantity,
+        SUM(
+          CASE
+            WHEN e.source_type IN ('visit_correction', 'restock_invoice') THEN e.warehouse_quantity
+            WHEN lower(trim(e.transaction)) = 'penjualan' THEN -e.warehouse_quantity
+            ELSE e.warehouse_quantity
+          END
+        ) AS warehouse_quantity,
         COUNT(*) AS entry_count,
-        MAX(e.created_at) AS updated_at
+        MAX(COALESCE(e.occurred_at, e.created_at)) AS updated_at
       FROM stock_entries e
-      LEFT JOIN latest_visits lv
-        ON lv.store_key = lower(regexp_replace(trim(e.store), '[[:space:]]+', ' ', 'g'))
-        AND lv.barcode = e.barcode
       WHERE lower(regexp_replace(trim(e.store), '[[:space:]]+', ' ', 'g')) = ${storeKey}
       GROUP BY lower(regexp_replace(trim(e.store), '[[:space:]]+', ' ', 'g')), e.barcode
     ),
-    restock_totals AS (
-      SELECT
-        s.normalized_name AS store_key,
-        r.barcode,
-        SUM(
-          CASE
-            WHEN lv.visit_id IS NULL THEN
-              r.quantity + CASE WHEN r.invoice_quantity IS NOT NULL THEN r.invoice_quantity - r.quantity ELSE 0 END
-            ELSE 0
-          END
-        ) AS all_quantity,
-        SUM(
-          CASE
-            WHEN lv.visit_id IS NOT NULL
-              THEN
-                CASE
-                  WHEN r.received_at > lv.visited_at
-                    OR (r.received_at = lv.visited_at AND r.created_at > lv.visit_created_at)
-                    THEN r.quantity
-                  ELSE 0
-                END
-                + CASE
-                  WHEN r.invoice_quantity IS NOT NULL AND r.invoice_recorded_at > lv.visited_at
-                    THEN r.invoice_quantity - r.quantity
-                  ELSE 0
-                END
-            ELSE 0
-          END
-        ) AS since_visit_quantity,
-        MAX(GREATEST(r.received_at, COALESCE(r.invoice_recorded_at, r.received_at))) AS updated_at
-      FROM stock_restocks r
-      INNER JOIN stores s ON s.id = r.store_id
-      LEFT JOIN latest_visits lv
-        ON lv.store_key = s.normalized_name
-        AND lv.barcode = r.barcode
-      WHERE s.normalized_name = ${storeKey}
-      GROUP BY s.normalized_name, r.barcode
+    latest_products AS (
+      SELECT DISTINCT ON (lower(regexp_replace(trim(e.store), '[[:space:]]+', ' ', 'g')), e.barcode)
+        lower(regexp_replace(trim(e.store), '[[:space:]]+', ' ', 'g')) AS store_key,
+        e.store,
+        e.product,
+        e.barcode
+      FROM stock_entries e
+      WHERE lower(regexp_replace(trim(e.store), '[[:space:]]+', ' ', 'g')) = ${storeKey}
+      ORDER BY
+        lower(regexp_replace(trim(e.store), '[[:space:]]+', ' ', 'g')),
+        e.barcode,
+        COALESCE(e.occurred_at, e.created_at) DESC,
+        e.created_at DESC,
+        e.id DESC
     )
     SELECT
-      COALESCE(lv.store, k.store) AS store,
-      COALESCE(lv.product, k.product) AS product,
-      k.barcode,
-      CASE
-        WHEN lv.visit_id IS NOT NULL
-          THEN lv.total_quantity + COALESCE(et.since_visit_quantity, 0) + COALESCE(rt.since_visit_quantity, 0)
-        ELSE COALESCE(et.all_quantity, 0) + COALESCE(rt.all_quantity, 0)
-      END AS "totalQuantity",
-      CASE
-        WHEN lv.visit_id IS NOT NULL THEN lv.display_quantity + COALESCE(et.display_quantity, 0)
-        ELSE COALESCE(et.display_quantity, 0)
-      END AS "displayQuantity",
-      CASE
-        WHEN lv.visit_id IS NOT NULL THEN lv.secondary_display_quantity + COALESCE(et.secondary_display_quantity, 0)
-        ELSE COALESCE(et.secondary_display_quantity, 0)
-      END AS "secondaryDisplayQuantity",
-      CASE
-        WHEN lv.visit_id IS NOT NULL THEN lv.warehouse_quantity + COALESCE(et.warehouse_quantity, 0)
-        ELSE COALESCE(et.warehouse_quantity, 0)
-      END AS "warehouseQuantity",
-      COALESCE(et.entry_count, 0) AS "entryCount",
-      GREATEST(lv.visited_at, et.updated_at, rt.updated_at) AS "updatedAt"
-    FROM key_rows k
-    LEFT JOIN latest_visits lv ON lv.store_key = k.store_key AND lv.barcode = k.barcode
-    LEFT JOIN entry_totals et ON et.store_key = k.store_key AND et.barcode = k.barcode
-    LEFT JOIN restock_totals rt ON rt.store_key = k.store_key AND rt.barcode = k.barcode
-    ORDER BY "updatedAt" DESC, COALESCE(lv.product, k.product) ASC
+      p.store,
+      p.product,
+      p.barcode,
+      t.total_quantity AS "totalQuantity",
+      t.display_quantity AS "displayQuantity",
+      t.secondary_display_quantity AS "secondaryDisplayQuantity",
+      t.warehouse_quantity AS "warehouseQuantity",
+      t.entry_count AS "entryCount",
+      t.updated_at AS "updatedAt"
+    FROM ledger_totals t
+    INNER JOIN latest_products p ON p.store_key = t.store_key AND p.barcode = t.barcode
+    ORDER BY "updatedAt" DESC, p.product ASC
     ${parsed.data.limit ? sql`LIMIT ${parsed.data.limit}` : sql``}
   `);
 
@@ -284,30 +238,42 @@ router.post("/stock-entries", async (req, res) => {
     return;
   }
 
-  const existing = await db
-    .select()
-    .from(stockEntriesTable)
-    .where(eq(stockEntriesTable.clientId, parsed.data.clientId))
-    .limit(1);
-  if (existing[0]) {
-    res.status(201).json(responseData(existing[0]));
-    return;
-  }
+  const result = await db.transaction(async (tx) => {
+    const [created] = await tx
+      .insert(stockEntriesTable)
+      .values({
+        ...parsed.data,
+        quantity: parsed.data.transaction === "Koreksi Stok -" ? -parsed.data.quantity : parsed.data.quantity,
+        displayQuantity: parsed.data.transaction === "Koreksi Stok -" ? -parsed.data.displayQuantity : parsed.data.displayQuantity,
+        secondaryDisplayQuantity: parsed.data.transaction === "Koreksi Stok -" ? -parsed.data.secondaryDisplayQuantity : parsed.data.secondaryDisplayQuantity,
+        warehouseQuantity: parsed.data.transaction === "Koreksi Stok -" ? -parsed.data.warehouseQuantity : parsed.data.warehouseQuantity,
+        sourceType: "manual",
+        sourceId: null,
+        occurredAt: new Date(),
+        syncStatus: "pending",
+      })
+      .onConflictDoNothing({ target: stockEntriesTable.clientId })
+      .returning();
 
-  const [created] = await db
-    .insert(stockEntriesTable)
-    .values({
-      ...parsed.data,
-      syncStatus: "pending",
-    })
-    .returning();
+    if (!created) {
+      const [existing] = await tx
+        .select()
+        .from(stockEntriesTable)
+        .where(eq(stockEntriesTable.clientId, parsed.data.clientId))
+        .limit(1);
+      return { entry: existing, created: false };
+    }
 
-  if (!created) {
+    await reconcileStockLedger(tx, created.store, created.barcode);
+    return { entry: created, created: true };
+  });
+
+  if (!result.entry) {
     res.status(500).json({ error: "Data stok gagal disimpan di server." });
     return;
   }
 
-  const updated = await updateSyncStatus(created);
+  const updated = result.created ? await updateSyncStatus(result.entry) : result.entry;
   res.status(201).json(responseData(updated));
 });
 
@@ -325,6 +291,10 @@ router.post("/stock-entries/:id/retry-sync", async (req, res) => {
     .limit(1);
   if (!entry) {
     res.status(404).json({ error: "Data stok tidak ditemukan." });
+    return;
+  }
+  if (entry.sourceType !== "manual") {
+    res.status(409).json({ error: "Transaksi ini tidak disinkronkan dari input manual." });
     return;
   }
 

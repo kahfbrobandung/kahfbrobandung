@@ -18,7 +18,7 @@ export const HealthCheckResponse = zod.object({
 
 
 /**
- * Returns the latest stock transactions stored on the server.
+ * Returns the latest movements from the shared stock ledger, including manual entries, goods received, invoice adjustments, and physical-count corrections.
  * @summary List stored stock entries
  */
 export const listStockEntriesQueryLimitDefault = 25;
@@ -31,43 +31,24 @@ export const ListStockEntriesQueryParams = zod.object({
   "limit": zod.coerce.number().int().min(1).max(listStockEntriesQueryLimitMax).default(listStockEntriesQueryLimitDefault)
 })
 
-export const listStockEntriesResponseOneClientIdMax = 100;
-
-export const listStockEntriesResponseOneStoreMax = 200;
-
-export const listStockEntriesResponseOneTransactionMax = 100;
-
-export const listStockEntriesResponseOneProductMax = 300;
-
-export const listStockEntriesResponseOneQuantityMin = 0;
-
-export const listStockEntriesResponseOneBarcodeMax = 100;
-
-export const listStockEntriesResponseOneDisplayQuantityMin = 0;
-
-export const listStockEntriesResponseOneSecondaryDisplayQuantityMin = 0;
-
-export const listStockEntriesResponseOneWarehouseQuantityMin = 0;
-
-
-
 export const ListStockEntriesResponseItem = zod.object({
-  "clientId": zod.string().min(1).max(listStockEntriesResponseOneClientIdMax),
-  "store": zod.string().min(1).max(listStockEntriesResponseOneStoreMax),
-  "transaction": zod.string().min(1).max(listStockEntriesResponseOneTransactionMax),
-  "product": zod.string().min(1).max(listStockEntriesResponseOneProductMax),
-  "quantity": zod.number().int().min(listStockEntriesResponseOneQuantityMin),
-  "barcode": zod.string().min(1).max(listStockEntriesResponseOneBarcodeMax),
-  "displayQuantity": zod.number().int().min(listStockEntriesResponseOneDisplayQuantityMin),
-  "secondaryDisplayQuantity": zod.number().int().min(listStockEntriesResponseOneSecondaryDisplayQuantityMin),
-  "warehouseQuantity": zod.number().int().min(listStockEntriesResponseOneWarehouseQuantityMin)
-}).and(zod.object({
   "id": zod.number().int(),
-  "syncStatus": zod.enum(['pending', 'synced', 'failed']),
+  "clientId": zod.string(),
+  "store": zod.string(),
+  "transaction": zod.string(),
+  "product": zod.string(),
+  "quantity": zod.number().int().describe('Signed movement quantity in the ledger; sales and physical corrections may be negative.'),
+  "barcode": zod.string(),
+  "displayQuantity": zod.number().int(),
+  "secondaryDisplayQuantity": zod.number().int(),
+  "warehouseQuantity": zod.number().int(),
+  "sourceType": zod.enum(['manual', 'restock', 'restock_invoice', 'visit_correction']),
+  "occurredAt": zod.coerce.date(),
+  "syncStatus": zod.enum(['pending', 'synced', 'failed', 'local']),
   "syncError": zod.string().nullable(),
   "createdAt": zod.coerce.date(),
   "syncedAt": zod.coerce.date().nullable()
-}))
+})
 export const ListStockEntriesResponse = zod.array(ListStockEntriesResponseItem)
 
 
@@ -107,47 +88,28 @@ export const CreateStockEntryBody = zod.object({
   "warehouseQuantity": zod.number().int().min(createStockEntryBodyWarehouseQuantityMin)
 })
 
-export const createStockEntryResponseOneClientIdMax = 100;
-
-export const createStockEntryResponseOneStoreMax = 200;
-
-export const createStockEntryResponseOneTransactionMax = 100;
-
-export const createStockEntryResponseOneProductMax = 300;
-
-export const createStockEntryResponseOneQuantityMin = 0;
-
-export const createStockEntryResponseOneBarcodeMax = 100;
-
-export const createStockEntryResponseOneDisplayQuantityMin = 0;
-
-export const createStockEntryResponseOneSecondaryDisplayQuantityMin = 0;
-
-export const createStockEntryResponseOneWarehouseQuantityMin = 0;
-
-
-
 export const CreateStockEntryResponse = zod.object({
-  "clientId": zod.string().min(1).max(createStockEntryResponseOneClientIdMax),
-  "store": zod.string().min(1).max(createStockEntryResponseOneStoreMax),
-  "transaction": zod.string().min(1).max(createStockEntryResponseOneTransactionMax),
-  "product": zod.string().min(1).max(createStockEntryResponseOneProductMax),
-  "quantity": zod.number().int().min(createStockEntryResponseOneQuantityMin),
-  "barcode": zod.string().min(1).max(createStockEntryResponseOneBarcodeMax),
-  "displayQuantity": zod.number().int().min(createStockEntryResponseOneDisplayQuantityMin),
-  "secondaryDisplayQuantity": zod.number().int().min(createStockEntryResponseOneSecondaryDisplayQuantityMin),
-  "warehouseQuantity": zod.number().int().min(createStockEntryResponseOneWarehouseQuantityMin)
-}).and(zod.object({
   "id": zod.number().int(),
-  "syncStatus": zod.enum(['pending', 'synced', 'failed']),
+  "clientId": zod.string(),
+  "store": zod.string(),
+  "transaction": zod.string(),
+  "product": zod.string(),
+  "quantity": zod.number().int().describe('Signed movement quantity in the ledger; sales and physical corrections may be negative.'),
+  "barcode": zod.string(),
+  "displayQuantity": zod.number().int(),
+  "secondaryDisplayQuantity": zod.number().int(),
+  "warehouseQuantity": zod.number().int(),
+  "sourceType": zod.enum(['manual', 'restock', 'restock_invoice', 'visit_correction']),
+  "occurredAt": zod.coerce.date(),
+  "syncStatus": zod.enum(['pending', 'synced', 'failed', 'local']),
   "syncError": zod.string().nullable(),
   "createdAt": zod.coerce.date(),
   "syncedAt": zod.coerce.date().nullable()
-}))
+})
 
 
 /**
- * Returns one unified on-hand balance per store and barcode. The latest visit is the physical-count baseline; stock inputs and incoming goods after that visit adjust it. If no visit exists, all stock inputs and incoming goods contribute to the balance. When limit is omitted, all product balances for the store are returned.
+ * Returns one on-hand balance per store and barcode from the shared stock ledger. Physical visits are signed corrections to the counted quantity; incoming goods and other stock movements are ledger entries. When limit is omitted, all product balances for the store are returned.
  * @summary List aggregated stock balances
  */
 
@@ -162,7 +124,7 @@ export const ListStockBalancesResponseItem = zod.object({
   "store": zod.string(),
   "product": zod.string(),
   "barcode": zod.string(),
-  "totalQuantity": zod.number().int().describe('Current balance after applying stock entries, incoming goods, and the latest physical visit.'),
+  "totalQuantity": zod.number().int().describe('Current balance from signed stock ledger movements and physical-count corrections.'),
   "displayQuantity": zod.number().int(),
   "secondaryDisplayQuantity": zod.number().int(),
   "warehouseQuantity": zod.number().int(),
@@ -613,7 +575,7 @@ export const GetDailySalesResponse = zod.array(GetDailySalesResponseItem)
 
 
 /**
- * Combines stock input transactions, stock opname visits, and incoming stock records without changing the sales estimate formula.
+ * Returns recent movements from the shared ledger, including input, sales, goods received, invoice adjustments, and physical-count corrections.
  * @summary Get a combined store activity history
  */
 export const getSalesActivityQueryLimitDefault = 100;
@@ -643,8 +605,8 @@ export const GetSalesActivityResponse = zod.array(GetSalesActivityResponseItem)
 
 
 /**
- * Removes the server record. A row already mirrored to Google Sheets may remain there.
- * @summary Delete a stock input transaction from the server
+ * Removes a manual ledger movement. Visit and goods-in movements must be removed from their source history.
+ * @summary Delete a manually entered stock transaction
  */
 
 
@@ -698,42 +660,23 @@ export const RetryStockEntrySyncParams = zod.object({
   "id": zod.coerce.number().int().min(1)
 })
 
-export const retryStockEntrySyncResponseOneClientIdMax = 100;
-
-export const retryStockEntrySyncResponseOneStoreMax = 200;
-
-export const retryStockEntrySyncResponseOneTransactionMax = 100;
-
-export const retryStockEntrySyncResponseOneProductMax = 300;
-
-export const retryStockEntrySyncResponseOneQuantityMin = 0;
-
-export const retryStockEntrySyncResponseOneBarcodeMax = 100;
-
-export const retryStockEntrySyncResponseOneDisplayQuantityMin = 0;
-
-export const retryStockEntrySyncResponseOneSecondaryDisplayQuantityMin = 0;
-
-export const retryStockEntrySyncResponseOneWarehouseQuantityMin = 0;
-
-
-
 export const RetryStockEntrySyncResponse = zod.object({
-  "clientId": zod.string().min(1).max(retryStockEntrySyncResponseOneClientIdMax),
-  "store": zod.string().min(1).max(retryStockEntrySyncResponseOneStoreMax),
-  "transaction": zod.string().min(1).max(retryStockEntrySyncResponseOneTransactionMax),
-  "product": zod.string().min(1).max(retryStockEntrySyncResponseOneProductMax),
-  "quantity": zod.number().int().min(retryStockEntrySyncResponseOneQuantityMin),
-  "barcode": zod.string().min(1).max(retryStockEntrySyncResponseOneBarcodeMax),
-  "displayQuantity": zod.number().int().min(retryStockEntrySyncResponseOneDisplayQuantityMin),
-  "secondaryDisplayQuantity": zod.number().int().min(retryStockEntrySyncResponseOneSecondaryDisplayQuantityMin),
-  "warehouseQuantity": zod.number().int().min(retryStockEntrySyncResponseOneWarehouseQuantityMin)
-}).and(zod.object({
   "id": zod.number().int(),
-  "syncStatus": zod.enum(['pending', 'synced', 'failed']),
+  "clientId": zod.string(),
+  "store": zod.string(),
+  "transaction": zod.string(),
+  "product": zod.string(),
+  "quantity": zod.number().int().describe('Signed movement quantity in the ledger; sales and physical corrections may be negative.'),
+  "barcode": zod.string(),
+  "displayQuantity": zod.number().int(),
+  "secondaryDisplayQuantity": zod.number().int(),
+  "warehouseQuantity": zod.number().int(),
+  "sourceType": zod.enum(['manual', 'restock', 'restock_invoice', 'visit_correction']),
+  "occurredAt": zod.coerce.date(),
+  "syncStatus": zod.enum(['pending', 'synced', 'failed', 'local']),
   "syncError": zod.string().nullable(),
   "createdAt": zod.coerce.date(),
   "syncedAt": zod.coerce.date().nullable()
-}))
+})
 
 

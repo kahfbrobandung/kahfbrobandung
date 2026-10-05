@@ -165,7 +165,7 @@ export const getListStockEntriesUrl = (params: ListStockEntriesParams,) => {
 }
 
 /**
- * Returns the latest stock transactions stored on the server.
+ * Returns the latest movements from the shared stock ledger, including manual entries, goods received, invoice adjustments, and physical-count corrections.
  * @summary List stored stock entries
  */
 export const listStockEntries = async (params: ListStockEntriesParams, options?: Parameters<typeof customFetch>[1]): Promise<StockEntry[]> => {
@@ -339,7 +339,7 @@ export const getListStockBalancesUrl = (params: ListStockBalancesParams,) => {
 }
 
 /**
- * Returns one unified on-hand balance per store and barcode. The latest visit is the physical-count baseline; stock inputs and incoming goods after that visit adjust it. If no visit exists, all stock inputs and incoming goods contribute to the balance. When limit is omitted, all product balances for the store are returned.
+ * Returns one on-hand balance per store and barcode from the shared stock ledger. Physical visits are signed corrections to the counted quantity; incoming goods and other stock movements are ledger entries. When limit is omitted, all product balances for the store are returned.
  * @summary List aggregated stock balances
  */
 export const listStockBalances = async (params: ListStockBalancesParams, options?: Parameters<typeof customFetch>[1]): Promise<StockBalance[]> => {
@@ -1181,7 +1181,7 @@ export const getGetSalesActivityUrl = (params: GetSalesActivityParams,) => {
 }
 
 /**
- * Combines stock input transactions, stock opname visits, and incoming stock records without changing the sales estimate formula.
+ * Returns recent movements from the shared ledger, including input, sales, goods received, invoice adjustments, and physical-count corrections.
  * @summary Get a combined store activity history
  */
 export const getSalesActivity = async (params: GetSalesActivityParams, options?: Parameters<typeof customFetch>[1]): Promise<SalesActivityRecord[]> => {
@@ -1259,8 +1259,8 @@ export const getDeleteStockEntryUrl = (id: number,) => {
 }
 
 /**
- * Removes the server record. A row already mirrored to Google Sheets may remain there.
- * @summary Delete a stock input transaction from the server
+ * Removes a manual ledger movement. Visit and goods-in movements must be removed from their source history.
+ * @summary Delete a manually entered stock transaction
  */
 export const deleteStockEntry = async (id: number, options?: Parameters<typeof customFetch>[1]): Promise<DeleteStockEntryResult> => {
 
@@ -1312,7 +1312,7 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
     export type DeleteStockEntryMutationVariables = {id: number}
 
     /**
- * @summary Delete a stock input transaction from the server
+ * @summary Delete a manually entered stock transaction
  */
 export const useDeleteStockEntry = <TError = ErrorType<ErrorResponse>,
     TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteStockEntry>>, TError,DeleteStockEntryMutationVariables, TContext>, request?: SecondParameter<typeof customFetch>}

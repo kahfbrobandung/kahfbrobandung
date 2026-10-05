@@ -28,6 +28,7 @@ export * from './salesStoreSummary';
 export * from './stockBalance';
 export * from './stockEntry';
 export * from './stockEntryInput';
+export * from './stockEntrySourceType';
 export * from './stockEntrySyncStatus';
 export * from './stockRestock';
 export * from './stockRestockInput';

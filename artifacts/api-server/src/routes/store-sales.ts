@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { and, desc, eq, gte, inArray, lt, sql } from "drizzle-orm";
 import { Router, type IRouter } from "express";
 import {
@@ -24,6 +25,7 @@ import {
   stockVisitsTable,
   storesTable,
 } from "@workspace/db";
+import { normalizeStoreKey, reconcileStockLedger } from "../lib/stock-ledger";
 
 const router: IRouter = Router();
 
@@ -236,136 +238,61 @@ router.get("/sales-activity", async (req, res): Promise<void> => {
 
   const requestedStore = parsed.data.store?.trim();
   const normalizedRequestedStore = requestedStore ? normalizeStoreName(requestedStore) : undefined;
-  const [allStores, matchingStore] = await Promise.all([
-    db.select({ name: storesTable.name, normalizedName: storesTable.normalizedName }).from(storesTable),
-    normalizedRequestedStore
-      ? db.select({ id: storesTable.id, name: storesTable.name })
-        .from(storesTable)
-        .where(eq(storesTable.normalizedName, normalizedRequestedStore))
-        .limit(1)
-      : Promise.resolve([]),
-  ]);
-  const storeNameByNormalized = new Map(
-    allStores.map((store) => [store.normalizedName, displayStoreName(store.name)]),
-  );
-  const requestedStoreId = matchingStore[0]?.id;
   const limit = parsed.data.limit;
-
-  const stockEntryConditions = [
-    gte(stockEntriesTable.createdAt, from),
-    lt(stockEntriesTable.createdAt, toExclusive),
+  const occurredAt = sql`COALESCE(${stockEntriesTable.occurredAt}, ${stockEntriesTable.createdAt})`;
+  const activityConditions = [
+    gte(occurredAt, from),
+    lt(occurredAt, toExclusive),
     ...(normalizedRequestedStore
       ? [sql`lower(regexp_replace(trim(${stockEntriesTable.store}), '[[:space:]]+', ' ', 'g')) = ${normalizedRequestedStore}`]
       : []),
   ];
-  const stockEntries = await db
+  const ledgerEntries = await db
     .select()
     .from(stockEntriesTable)
-    .where(and(...stockEntryConditions))
-    .orderBy(desc(stockEntriesTable.createdAt), desc(stockEntriesTable.id))
+    .where(and(...activityConditions))
+    .orderBy(desc(occurredAt), desc(stockEntriesTable.createdAt), desc(stockEntriesTable.id))
     .limit(limit);
+  const activity = ledgerEntries.map((entry) => {
+    const isVisitCorrection = entry.sourceType === "visit_correction";
+    const isRestock = entry.sourceType === "restock";
+    const isInvoiceCorrection = entry.sourceType === "restock_invoice";
+    const quantity = entry.sourceType === "manual" && entry.transaction.trim().toLocaleLowerCase("id-ID") === "penjualan"
+      ? -entry.quantity
+      : entry.quantity;
+    const signedQuantity = quantity > 0 ? `+${quantity}` : String(quantity);
+    const recordType = isVisitCorrection
+      ? "stock_visit" as const
+      : isRestock || isInvoiceCorrection
+        ? "stock_restock" as const
+        : "stock_entry" as const;
+    const title = isVisitCorrection
+      ? "Koreksi fisik (kunjungan)"
+      : isRestock
+        ? "Barang masuk"
+        : isInvoiceCorrection
+          ? "Koreksi faktur"
+          : `Input stok · ${entry.transaction}`;
+    const description = isVisitCorrection
+      ? `${entry.product} · hitungan fisik ${entry.countedQuantity ?? 0} unit · koreksi ${signedQuantity} unit`
+      : isRestock
+        ? `${entry.product} · ${entry.barcode} · +${entry.quantity} unit diterima`
+        : isInvoiceCorrection
+          ? `${entry.product} · penyesuaian faktur ${signedQuantity} unit`
+          : `${entry.product || "Produk"} · ${entry.barcode} · ${signedQuantity} unit`;
 
-  const visits = requestedStore && !requestedStoreId
-    ? []
-    : await db
-      .select({
-        id: stockVisitsTable.id,
-        store: storesTable.name,
-        visitedAt: stockVisitsTable.visitedAt,
-      })
-      .from(stockVisitsTable)
-      .innerJoin(storesTable, eq(stockVisitsTable.storeId, storesTable.id))
-      .where(and(
-        gte(stockVisitsTable.visitedAt, from),
-        lt(stockVisitsTable.visitedAt, toExclusive),
-        ...(requestedStoreId ? [eq(stockVisitsTable.storeId, requestedStoreId)] : []),
-      ))
-      .orderBy(desc(stockVisitsTable.visitedAt), desc(stockVisitsTable.id))
-      .limit(limit);
-
-  const restocks = requestedStore && !requestedStoreId
-    ? []
-    : await db
-      .select({
-        id: stockRestocksTable.id,
-        store: storesTable.name,
-        product: stockRestocksTable.product,
-        barcode: stockRestocksTable.barcode,
-        quantity: stockRestocksTable.quantity,
-        invoiceNumber: stockRestocksTable.invoiceNumber,
-        invoiceQuantity: stockRestocksTable.invoiceQuantity,
-        invoiceRecordedAt: stockRestocksTable.invoiceRecordedAt,
-        receivedAt: stockRestocksTable.receivedAt,
-      })
-      .from(stockRestocksTable)
-      .innerJoin(storesTable, eq(stockRestocksTable.storeId, storesTable.id))
-      .where(and(
-        gte(stockRestocksTable.receivedAt, from),
-        lt(stockRestocksTable.receivedAt, toExclusive),
-        ...(requestedStoreId ? [eq(stockRestocksTable.storeId, requestedStoreId)] : []),
-      ))
-      .orderBy(desc(stockRestocksTable.receivedAt), desc(stockRestocksTable.id))
-      .limit(limit);
-
-  const visitLines = visits.length
-    ? await db
-      .select()
-      .from(stocktakeLinesTable)
-      .where(inArray(stocktakeLinesTable.visitId, visits.map((visit) => visit.id)))
-      .orderBy(stocktakeLinesTable.id)
-    : [];
-  const linesByVisit = new Map<number, typeof visitLines>();
-  for (const line of visitLines) {
-    const lines = linesByVisit.get(line.visitId) ?? [];
-    lines.push(line);
-    linesByVisit.set(line.visitId, lines);
-  }
-
-  const activity = [
-    ...stockEntries.map((entry) => ({
+    return {
       id: entry.id,
-      recordType: "stock_entry" as const,
-      store: storeNameByNormalized.get(normalizeStoreName(entry.store)) ?? displayStoreName(entry.store),
-      occurredAt: iso(entry.createdAt),
-      title: `Input stok · ${entry.transaction}`,
-      description: `${entry.product || "Produk"} · ${entry.barcode} · ${entry.quantity} unit`,
-      quantity: entry.quantity,
-      skuCount: null,
-      syncStatus: entry.syncStatus,
-    })),
-    ...visits.map((visit) => {
-      const lines = linesByVisit.get(visit.id) ?? [];
-      const linePreview = lines
-        .slice(0, 3)
-        .map((line) => `${line.product} (${line.totalQuantity})`)
-        .join(" · ");
-      const remainingCount = lines.length - Math.min(lines.length, 3);
-      return {
-        id: visit.id,
-        recordType: "stock_visit" as const,
-        store: visit.store,
-        occurredAt: iso(visit.visitedAt),
-        title: "Kunjungan SO",
-        description: `${lines.length} SKU${linePreview ? ` · ${linePreview}` : ""}${remainingCount > 0 ? ` · +${remainingCount} lainnya` : ""}`,
-        quantity: null,
-        skuCount: lines.length,
-        syncStatus: null,
-      };
-    }),
-    ...restocks.map((entry) => ({
-      id: entry.id,
-      recordType: "stock_restock" as const,
-      store: entry.store,
-      occurredAt: iso(entry.receivedAt),
-      title: "Barang masuk",
-      description: `${entry.product} · ${entry.barcode} · ${entry.quantity} unit diterima${entry.invoiceNumber ? ` · Faktur ${entry.invoiceNumber}: ${entry.invoiceQuantity} unit, koreksi ${Number(entry.invoiceQuantity) - Number(entry.quantity) >= 0 ? "+" : ""}${Number(entry.invoiceQuantity) - Number(entry.quantity)}` : ""}`,
-      quantity: entry.invoiceQuantity ?? entry.quantity,
-      skuCount: null,
-      syncStatus: null,
-    })),
-  ]
-    .sort((a, b) => new Date(b.occurredAt).getTime() - new Date(a.occurredAt).getTime() || b.id - a.id)
-    .slice(0, limit);
+      recordType,
+      store: displayStoreName(entry.store),
+      occurredAt: iso(entry.occurredAt ?? entry.createdAt),
+      title,
+      description,
+      quantity,
+      skuCount: isVisitCorrection ? 1 : null,
+      syncStatus: entry.sourceType === "manual" ? entry.syncStatus : null,
+    };
+  });
 
   res.json(GetSalesActivityResponse.parse(activity));
 });
@@ -468,7 +395,8 @@ router.post("/stock-visits", async (req, res) => {
       return existing?.id;
     }
 
-    await tx.insert(stocktakeLinesTable).values(
+    const visitedAt = new Date(parsed.data.visitedAt);
+    const lines = await tx.insert(stocktakeLinesTable).values(
       parsed.data.lines.map((line) => ({
         visitId: created.id,
         product: line.product.trim(),
@@ -479,7 +407,30 @@ router.post("/stock-visits", async (req, res) => {
         totalQuantity:
           line.displayQuantity + line.secondaryDisplayQuantity + line.warehouseQuantity,
       })),
-    );
+    ).returning();
+    await tx.insert(stockEntriesTable).values(
+      lines.map((line) => ({
+        clientId: randomUUID(),
+        store: store.name,
+        transaction: "Koreksi SO",
+        product: line.product,
+        quantity: 0,
+        barcode: line.barcode,
+        sourceType: "visit_correction",
+        sourceId: String(line.id),
+        occurredAt: visitedAt,
+        countedQuantity: line.totalQuantity,
+        countedDisplayQuantity: line.displayQuantity,
+        countedSecondaryDisplayQuantity: line.secondaryDisplayQuantity,
+        countedWarehouseQuantity: line.warehouseQuantity,
+        syncStatus: "local",
+      })),
+    ).onConflictDoNothing({
+      target: [stockEntriesTable.sourceType, stockEntriesTable.sourceId],
+    });
+    for (const barcode of new Set(lines.map((line) => line.barcode))) {
+      await reconcileStockLedger(tx, store.name, barcode);
+    }
     return created.id;
   });
 
@@ -502,10 +453,36 @@ router.delete("/stock-visits/:id", async (req, res): Promise<void> => {
     return;
   }
 
-  const [deleted] = await db
-    .delete(stockVisitsTable)
-    .where(eq(stockVisitsTable.id, parsed.data.id))
-    .returning({ id: stockVisitsTable.id });
+  const deleted = await db.transaction(async (tx) => {
+    const [visit] = await tx
+      .select({
+        id: stockVisitsTable.id,
+        store: storesTable.name,
+      })
+      .from(stockVisitsTable)
+      .innerJoin(storesTable, eq(stockVisitsTable.storeId, storesTable.id))
+      .where(eq(stockVisitsTable.id, parsed.data.id))
+      .limit(1);
+    if (!visit) return undefined;
+
+    const lines = await tx
+      .select({ id: stocktakeLinesTable.id, barcode: stocktakeLinesTable.barcode })
+      .from(stocktakeLinesTable)
+      .where(eq(stocktakeLinesTable.visitId, visit.id));
+    if (lines.length) {
+      await tx
+        .delete(stockEntriesTable)
+        .where(and(
+          eq(stockEntriesTable.sourceType, "visit_correction"),
+          inArray(stockEntriesTable.sourceId, lines.map((line) => String(line.id))),
+        ));
+    }
+    await tx.delete(stockVisitsTable).where(eq(stockVisitsTable.id, visit.id));
+    for (const barcode of new Set(lines.map((line) => line.barcode))) {
+      await reconcileStockLedger(tx, visit.store, barcode);
+    }
+    return visit.id;
+  });
   if (!deleted) {
     res.status(404).json({ error: "Kunjungan tidak ditemukan." });
     return;
@@ -578,25 +555,50 @@ router.post("/stock-restocks", async (req, res) => {
     return;
   }
 
-  const [created] = await db
-    .insert(stockRestocksTable)
-    .values({
-      clientId: parsed.data.clientId,
-      storeId: store.id,
-      product: parsed.data.product.trim(),
-      barcode: parsed.data.barcode.trim(),
-      quantity: parsed.data.quantity,
-      receivedAt: new Date(parsed.data.receivedAt),
-      note: parsed.data.note?.trim() || null,
-    })
-    .onConflictDoNothing({ target: stockRestocksTable.clientId })
-    .returning();
+  const row = await db.transaction(async (tx) => {
+    const [created] = await tx
+      .insert(stockRestocksTable)
+      .values({
+        clientId: parsed.data.clientId,
+        storeId: store.id,
+        product: parsed.data.product.trim(),
+        barcode: parsed.data.barcode.trim(),
+        quantity: parsed.data.quantity,
+        receivedAt: new Date(parsed.data.receivedAt),
+        note: parsed.data.note?.trim() || null,
+      })
+      .onConflictDoNothing({ target: stockRestocksTable.clientId })
+      .returning();
 
-  const row = created ?? (await db
-    .select()
-    .from(stockRestocksTable)
-    .where(eq(stockRestocksTable.clientId, parsed.data.clientId))
-    .limit(1))[0];
+    const [restock] = created
+      ? [created]
+      : await tx
+        .select()
+        .from(stockRestocksTable)
+        .where(eq(stockRestocksTable.clientId, parsed.data.clientId))
+        .limit(1);
+    if (!restock) return undefined;
+
+    await tx
+      .insert(stockEntriesTable)
+      .values({
+        clientId: randomUUID(),
+        store: store.name,
+        transaction: "Barang Masuk",
+        product: restock.product,
+        quantity: restock.quantity,
+        barcode: restock.barcode,
+        sourceType: "restock",
+        sourceId: String(restock.id),
+        occurredAt: restock.receivedAt,
+        syncStatus: "local",
+      })
+      .onConflictDoNothing({
+        target: [stockEntriesTable.sourceType, stockEntriesTable.sourceId],
+      });
+    await reconcileStockLedger(tx, store.name, restock.barcode);
+    return restock;
+  });
   if (!row) {
     res.status(500).json({ error: "Barang masuk tidak berhasil disimpan." });
     return;
@@ -621,26 +623,64 @@ router.patch("/stock-restocks/:id/invoice", async (req, res): Promise<void> => {
     return;
   }
 
-  const [updated] = await db
-    .update(stockRestocksTable)
-    .set({
-      invoiceNumber: parsed.data.invoiceNumber.trim(),
-      invoiceQuantity: parsed.data.invoiceQuantity,
-      invoiceDate: parsed.data.invoiceDate.toISOString().slice(0, 10),
-      invoiceRecordedAt: new Date(),
-    })
-    .where(eq(stockRestocksTable.id, path.data.id))
-    .returning();
-  if (!updated) {
+  const recordedAt = new Date();
+  const result = await db.transaction(async (tx) => {
+    const [updated] = await tx
+      .update(stockRestocksTable)
+      .set({
+        invoiceNumber: parsed.data.invoiceNumber.trim(),
+        invoiceQuantity: parsed.data.invoiceQuantity,
+        invoiceDate: parsed.data.invoiceDate.toISOString().slice(0, 10),
+        invoiceRecordedAt: recordedAt,
+      })
+      .where(eq(stockRestocksTable.id, path.data.id))
+      .returning();
+    if (!updated) return undefined;
+
+    const [store] = await tx
+      .select({ name: storesTable.name })
+      .from(storesTable)
+      .where(eq(storesTable.id, updated.storeId))
+      .limit(1);
+    if (!store) throw new Error("Toko untuk barang masuk tidak ditemukan.");
+
+    await tx
+      .insert(stockEntriesTable)
+      .values({
+        clientId: randomUUID(),
+        store: store.name,
+        transaction: "Koreksi Faktur",
+        product: updated.product,
+        quantity: parsed.data.invoiceQuantity - updated.quantity,
+        barcode: updated.barcode,
+        sourceType: "restock_invoice",
+        sourceId: String(updated.id),
+        occurredAt: recordedAt,
+        createdAt: recordedAt,
+        syncStatus: "local",
+      })
+      .onConflictDoUpdate({
+        target: [stockEntriesTable.sourceType, stockEntriesTable.sourceId],
+        set: {
+          store: store.name,
+          transaction: "Koreksi Faktur",
+          product: updated.product,
+          quantity: parsed.data.invoiceQuantity - updated.quantity,
+          barcode: updated.barcode,
+          occurredAt: recordedAt,
+          createdAt: recordedAt,
+          syncStatus: "local",
+          syncError: null,
+        },
+      });
+    await reconcileStockLedger(tx, store.name, updated.barcode);
+    return { updated, store };
+  });
+  if (!result) {
     res.status(404).json({ error: "Catatan barang masuk tidak ditemukan." });
     return;
   }
-
-  const [store] = await db
-    .select({ name: storesTable.name })
-    .from(storesTable)
-    .where(eq(storesTable.id, updated.storeId))
-    .limit(1);
+  const { updated, store } = result;
   res.json({
     ...updated,
     store: store?.name ?? "",
@@ -659,16 +699,37 @@ router.delete("/stock-restocks/:id/invoice", async (req, res): Promise<void> => 
     return;
   }
 
-  const [updated] = await db
-    .update(stockRestocksTable)
-    .set({
-      invoiceNumber: null,
-      invoiceQuantity: null,
-      invoiceDate: null,
-      invoiceRecordedAt: null,
-    })
-    .where(eq(stockRestocksTable.id, parsed.data.id))
-    .returning({ id: stockRestocksTable.id });
+  const updated = await db.transaction(async (tx) => {
+    const [restock] = await tx
+      .select()
+      .from(stockRestocksTable)
+      .where(eq(stockRestocksTable.id, parsed.data.id))
+      .limit(1);
+    if (!restock) return undefined;
+
+    await tx
+      .update(stockRestocksTable)
+      .set({
+        invoiceNumber: null,
+        invoiceQuantity: null,
+        invoiceDate: null,
+        invoiceRecordedAt: null,
+      })
+      .where(eq(stockRestocksTable.id, restock.id));
+    await tx
+      .delete(stockEntriesTable)
+      .where(and(
+        eq(stockEntriesTable.sourceType, "restock_invoice"),
+        eq(stockEntriesTable.sourceId, String(restock.id)),
+      ));
+    const [store] = await tx
+      .select({ name: storesTable.name })
+      .from(storesTable)
+      .where(eq(storesTable.id, restock.storeId))
+      .limit(1);
+    if (store) await reconcileStockLedger(tx, store.name, restock.barcode);
+    return restock.id;
+  });
   if (!updated) {
     res.status(404).json({ error: "Catatan barang masuk tidak ditemukan." });
     return;
@@ -683,10 +744,33 @@ router.delete("/stock-restocks/:id", async (req, res): Promise<void> => {
     return;
   }
 
-  const [deleted] = await db
-    .delete(stockRestocksTable)
-    .where(eq(stockRestocksTable.id, parsed.data.id))
-    .returning({ id: stockRestocksTable.id });
+  const deleted = await db.transaction(async (tx) => {
+    const [restock] = await tx
+      .select({
+        id: stockRestocksTable.id,
+        storeId: stockRestocksTable.storeId,
+        barcode: stockRestocksTable.barcode,
+      })
+      .from(stockRestocksTable)
+      .where(eq(stockRestocksTable.id, parsed.data.id))
+      .limit(1);
+    if (!restock) return undefined;
+
+    await tx
+      .delete(stockEntriesTable)
+      .where(and(
+        inArray(stockEntriesTable.sourceType, ["restock", "restock_invoice"]),
+        eq(stockEntriesTable.sourceId, String(restock.id)),
+      ));
+    await tx.delete(stockRestocksTable).where(eq(stockRestocksTable.id, restock.id));
+    const [store] = await tx
+      .select({ name: storesTable.name })
+      .from(storesTable)
+      .where(eq(storesTable.id, restock.storeId))
+      .limit(1);
+    if (store) await reconcileStockLedger(tx, store.name, restock.barcode);
+    return restock.id;
+  });
   if (!deleted) {
     res.status(404).json({ error: "Catatan barang masuk tidak ditemukan." });
     return;
@@ -724,95 +808,71 @@ router.get("/sales-monitor", async (req, res) => {
   }
   toExclusive.setUTCDate(toExclusive.getUTCDate() + 1);
 
-  let requestedStoreId: number | undefined;
-  if (parsed.data.store?.trim()) {
-    const [store] = await db
-      .select({ id: storesTable.id })
-      .from(storesTable)
-      .where(eq(storesTable.normalizedName, normalizeStoreName(parsed.data.store)))
-      .limit(1);
-    if (!store) {
-      res.json(emptySalesMonitor());
-      return;
-    }
-    requestedStoreId = store.id;
-  }
-
-  const storeFilter = requestedStoreId
-    ? sql`AND v.store_id = ${requestedStoreId}`
+  const requestedStoreKey = parsed.data.store?.trim()
+    ? normalizeStoreKey(parsed.data.store)
+    : undefined;
+  const storeFilter = requestedStoreKey
+    ? sql`AND lower(regexp_replace(trim(e.store), '[[:space:]]+', ' ', 'g')) = ${requestedStoreKey}`
     : sql``;
   const result = await db.execute<SalesQueryRow>(sql`
     WITH numbered_visits AS (
       SELECT
-        s.name AS store,
-        v.store_id,
-        v.id AS visit_id,
-        v.visited_at AS "currentVisitAt",
-        v.created_at AS "currentVisitCreatedAt",
-        l.product,
-        l.barcode,
-        l.total_quantity AS "currentStock",
-        LAG(v.visited_at) OVER (
-          PARTITION BY v.store_id, l.barcode
-          ORDER BY v.visited_at, v.created_at, v.id
+        e.store,
+        lower(regexp_replace(trim(e.store), '[[:space:]]+', ' ', 'g')) AS store_key,
+        e.id AS visit_id,
+        e.occurred_at AS "currentVisitAt",
+        e.created_at AS "currentVisitCreatedAt",
+        e.product,
+        e.barcode,
+        e.counted_quantity AS "currentStock",
+        LAG(e.id) OVER (
+          PARTITION BY lower(regexp_replace(trim(e.store), '[[:space:]]+', ' ', 'g')), e.barcode
+          ORDER BY e.occurred_at, e.created_at, e.id
+        ) AS "previousVisitId",
+        LAG(e.occurred_at) OVER (
+          PARTITION BY lower(regexp_replace(trim(e.store), '[[:space:]]+', ' ', 'g')), e.barcode
+          ORDER BY e.occurred_at, e.created_at, e.id
         ) AS "previousVisitAt",
-        LAG(v.created_at) OVER (
-          PARTITION BY v.store_id, l.barcode
-          ORDER BY v.visited_at, v.created_at, v.id
+        LAG(e.created_at) OVER (
+          PARTITION BY lower(regexp_replace(trim(e.store), '[[:space:]]+', ' ', 'g')), e.barcode
+          ORDER BY e.occurred_at, e.created_at, e.id
         ) AS "previousVisitCreatedAt",
-        LAG(l.total_quantity) OVER (
-          PARTITION BY v.store_id, l.barcode
-          ORDER BY v.visited_at, v.created_at, v.id
+        LAG(e.counted_quantity) OVER (
+          PARTITION BY lower(regexp_replace(trim(e.store), '[[:space:]]+', ' ', 'g')), e.barcode
+          ORDER BY e.occurred_at, e.created_at, e.id
         ) AS "previousStock"
-      FROM stock_visits v
-      INNER JOIN stores s ON s.id = v.store_id
-      INNER JOIN stocktake_lines l ON l.visit_id = v.id
-      WHERE v.visited_at < ${toExclusive}
+      FROM stock_entries e
+      WHERE e.source_type = 'visit_correction'
+        AND e.counted_quantity IS NOT NULL
+        AND e.occurred_at < ${toExclusive}
       ${storeFilter}
     ),
     intervals AS (
       SELECT
         n.*,
         COALESCE((
-          SELECT SUM(
-            CASE
-              WHEN (
-                r.received_at > n."previousVisitAt"
-                OR (r.received_at = n."previousVisitAt" AND r.created_at > n."previousVisitCreatedAt")
-              )
-              AND (
-                r.received_at < n."currentVisitAt"
-                OR (r.received_at = n."currentVisitAt" AND r.created_at <= n."currentVisitCreatedAt")
-              )
-                THEN r.quantity
-              ELSE 0
-            END
-            +
-            CASE
-              WHEN r.invoice_quantity IS NOT NULL
-                AND r.invoice_recorded_at > n."previousVisitAt"
-                AND r.invoice_recorded_at <= n."currentVisitAt"
-                THEN r.invoice_quantity - r.quantity
-              ELSE 0
-            END
-          )
-          FROM stock_restocks r
-          WHERE r.store_id = n.store_id
-            AND r.barcode = n.barcode
+          SELECT SUM(e.quantity)
+          FROM stock_entries e
+          WHERE e.source_type IN ('restock', 'restock_invoice')
+            AND lower(regexp_replace(trim(e.store), '[[:space:]]+', ' ', 'g')) = n.store_key
+            AND e.barcode = n.barcode
             AND (
-              (
-                r.received_at > n."previousVisitAt"
-                OR (r.received_at = n."previousVisitAt" AND r.created_at > n."previousVisitCreatedAt")
-              )
-              AND (
-                r.received_at < n."currentVisitAt"
-                OR (r.received_at = n."currentVisitAt" AND r.created_at <= n."currentVisitCreatedAt")
-              )
-              OR (
-                r.invoice_quantity IS NOT NULL
-                AND r.invoice_recorded_at > n."previousVisitAt"
-                AND r.invoice_recorded_at <= n."currentVisitAt"
-              )
+              COALESCE(e.occurred_at, e.created_at),
+              e.created_at,
+              e.id
+            ) > (
+              n."previousVisitAt",
+              n."previousVisitCreatedAt",
+              n."previousVisitId"
+            )
+            AND (
+              COALESCE(e.occurred_at, e.created_at),
+              e.created_at,
+              e.id
+            ) <= (
+              n."currentVisitAt",
+              n."currentVisitCreatedAt",
+              n.visit_id
             )
         ), 0) AS "restockQuantity"
         ,COALESCE((
@@ -824,10 +884,27 @@ router.get("/sales-monitor", async (req, res) => {
           )
           FROM stock_entries e
           WHERE lower(regexp_replace(trim(e.store), '[[:space:]]+', ' ', 'g'))
-              = lower(regexp_replace(trim(n.store), '[[:space:]]+', ' ', 'g'))
+              = n.store_key
             AND e.barcode = n.barcode
-            AND e.created_at > n."previousVisitAt"
-            AND e.created_at <= n."currentVisitAt"
+            AND e.source_type = 'manual'
+            AND (
+              COALESCE(e.occurred_at, e.created_at),
+              e.created_at,
+              e.id
+            ) > (
+              n."previousVisitAt",
+              n."previousVisitCreatedAt",
+              n."previousVisitId"
+            )
+            AND (
+              COALESCE(e.occurred_at, e.created_at),
+              e.created_at,
+              e.id
+            ) <= (
+              n."currentVisitAt",
+              n."currentVisitCreatedAt",
+              n.visit_id
+            )
         ), 0) AS "stockEntryAdjustment"
       FROM numbered_visits n
       WHERE n."previousVisitAt" IS NOT NULL

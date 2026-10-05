@@ -41,6 +41,8 @@ const TRANSACTIONS = [
   'Input Stok',
   'Stock Awal',
   'Penjualan',
+  'Koreksi Stok +',
+  'Koreksi Stok -',
   'Pembelian',
   'Retur',
   'Lainnya'
@@ -60,6 +62,8 @@ export default function Home() {
   const queryClient = useQueryClient();
   const activeStore = storeName.trim();
   const totalStock = Number(displayQuantity || 0) + Number(secondaryDisplayQuantity || 0) + Number(warehouseQuantity || 0);
+  const isNegativeMovement = transaction === 'Penjualan' || transaction === 'Koreksi Stok -';
+  const isPhysicalCorrection = transaction === 'Koreksi Stok +' || transaction === 'Koreksi Stok -';
   const { data: health } = useHealthCheck({
     query: { queryKey: getHealthCheckQueryKey(), refetchInterval: 30_000 },
   });
@@ -188,7 +192,7 @@ export default function Home() {
     if (!activeStore || !transaction || !selectedBarcode || !hasQuantity) {
       toast({
         title: 'Peringatan',
-        description: 'Pilih toko dan produk, lalu masukkan jumlah tambahan pada Display, Secondary, atau Gudang.',
+        description: 'Pilih toko dan produk, lalu masukkan jumlah pergerakan pada Display, Secondary, atau Gudang.',
         variant: 'destructive'
       });
       return;
@@ -230,6 +234,13 @@ export default function Home() {
         label: 'Tersinkron',
         icon: CheckCircle2,
         className: 'text-emerald-700 bg-emerald-50 border-emerald-200',
+      };
+    }
+    if (entry.syncStatus === 'local') {
+      return {
+        label: 'Di buku stok',
+        icon: CheckCircle2,
+        className: 'text-sky-700 bg-sky-50 border-sky-200',
       };
     }
     if (entry.syncStatus === 'failed') {
@@ -370,7 +381,7 @@ export default function Home() {
                   <div>
                     <p className="text-xs font-semibold text-foreground">Saldo terpadu saat ini</p>
                     <p className="text-[11px] text-muted-foreground">
-                      Stok dasar kunjungan + tambahan setelahnya
+                      Saldo untuk SKU yang dipilih
                     </p>
                   </div>
                   <span className="text-xl font-bold text-primary">{selectedBalance.totalQuantity}</span>
@@ -381,8 +392,18 @@ export default function Home() {
             {/* Quantity */}
             <div className="space-y-3">
               <div>
-                <p className="text-sm font-semibold text-foreground">{transaction === 'Penjualan' ? 'Jumlah penjualan per lokasi' : 'Input stok per lokasi'}</p>
-                <p className="mt-1 text-xs text-muted-foreground">{transaction === 'Penjualan' ? 'Jumlah ini mengurangi saldo terpadu.' : 'Jumlah ini menambah saldo terpadu.'}</p>
+                <p className="text-sm font-semibold text-foreground">
+                  {isPhysicalCorrection ? 'Jumlah koreksi per lokasi' : transaction === 'Penjualan' ? 'Jumlah penjualan per lokasi' : 'Jumlah stok per lokasi'}
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {isPhysicalCorrection
+                    ? transaction === 'Koreksi Stok +'
+                      ? 'Menambah saldo untuk SKU yang sudah ada, misalnya barang yang baru ditemukan.'
+                      : 'Mengurangi saldo buku jika jumlah fisik lebih sedikit.'
+                    : isNegativeMovement
+                      ? 'Jumlah ini mengurangi saldo buku.'
+                      : 'Jumlah ini menambah saldo buku.'}
+                </p>
               </div>
               <div className="grid grid-cols-3 gap-2.5">
                 {([
@@ -410,12 +431,16 @@ export default function Home() {
               <div className="flex items-center justify-between rounded-xl border border-accent/40 bg-accent/10 px-4 py-3">
                 <div>
                   <p className="text-sm font-semibold text-foreground">Total transaksi</p>
-                  <p className="text-xs text-muted-foreground">{transaction === 'Penjualan' ? 'Mengurangi saldo toko' : 'Menambah saldo toko'}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {isNegativeMovement ? 'Mengurangi saldo toko' : 'Menambah saldo toko'}
+                  </p>
                 </div>
-                <span className="text-2xl font-bold tracking-tight text-primary" data-testid="value-stock-addition">{totalStock}</span>
+                <span className="text-2xl font-bold tracking-tight text-primary" data-testid="value-stock-addition">
+                  {isNegativeMovement ? `−${totalStock}` : `+${totalStock}`}
+                </span>
               </div>
               <p className="px-1 text-xs text-muted-foreground">
-                Input Stok menambah saldo. Untuk hitung fisik saat kunjungan, catat total yang ada melalui Kunjungan & barang masuk—bukan sebagai tambahan.
+                Input, barang masuk, penjualan, dan koreksi dicatat dalam satu buku stok. Untuk menghitung stok fisik lengkap, gunakan Kunjungan; angka kunjungan akan menjadi koreksi selisih, bukan tambahan.
               </p>
             </div>
 
@@ -530,23 +555,26 @@ export default function Home() {
               )}
               {recentEntries.length > 0 && (
                 <div className={stockBalances.length > 0 ? "border-t border-border pt-3" : ""}>
-                  <p className="text-xs font-semibold text-foreground">Riwayat transaksi terbaru</p>
+                  <p className="text-xs font-semibold text-foreground">Buku stok · pergerakan terbaru</p>
                   <p className="mb-2 mt-1 text-[11px] text-muted-foreground">
-                    Ini catatan perubahan stok, bukan saldo terpisah. Gunakan angka total produk di atas.
+                    Input, penjualan, barang masuk, dan koreksi fisik tercatat bersama. Saldo dihitung dari pergerakan ini.
                   </p>
                 </div>
               )}
               {recentEntries.map((entry) => {
                 const syncMeta = getSyncMeta(entry);
                 const SyncIcon = syncMeta.icon;
+                const movementQuantity = entry.transaction.trim().toLocaleLowerCase('id-ID') === 'penjualan'
+                  ? -entry.quantity
+                  : entry.quantity;
                 return (
                   <div key={entry.id} className="rounded-xl border border-border p-3">
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
                         <p className="text-sm font-semibold text-foreground truncate">{entry.product}</p>
                         <p className="text-xs text-muted-foreground mt-0.5">
-                          {entry.transaction} · {entry.quantity} stok ·{' '}
-                          {new Date(entry.createdAt).toLocaleString('id-ID', {
+                          {entry.transaction} · {movementQuantity > 0 ? '+' : ''}{movementQuantity} stok ·{' '}
+                          {new Date(entry.occurredAt || entry.createdAt).toLocaleString('id-ID', {
                             day: '2-digit',
                             month: 'short',
                             hour: '2-digit',
@@ -559,16 +587,22 @@ export default function Home() {
                           <SyncIcon size={12} />
                           {syncMeta.label}
                         </span>
-                        <button
-                          type="button"
-                          onClick={() => deleteEntry(entry)}
-                          disabled={deleteEntryMutation.isPending}
-                          className="rounded-lg p-2 text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
-                          aria-label={`Hapus catatan ${entry.product}`}
-                          data-testid={`button-delete-stock-entry-${entry.id}`}
-                        >
-                          <Trash2 size={14} />
-                        </button>
+                        {entry.sourceType === 'manual' ? (
+                          <button
+                            type="button"
+                            onClick={() => deleteEntry(entry)}
+                            disabled={deleteEntryMutation.isPending}
+                            className="rounded-lg p-2 text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
+                            aria-label={`Hapus catatan ${entry.product}`}
+                            data-testid={`button-delete-stock-entry-${entry.id}`}
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        ) : (
+                          <span className="px-1 text-[10px] text-muted-foreground" title="Kelola dari riwayat operasional">
+                            Kelola dari sumber
+                          </span>
+                        )}
                       </div>
                     </div>
                     {entry.syncStatus === 'failed' && (

@@ -13,4 +13,5 @@ export const StockEntrySyncStatus = {
   pending: 'pending',
   synced: 'synced',
   failed: 'failed',
+  local: 'local',
 } as const;
