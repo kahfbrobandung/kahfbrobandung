@@ -1,1 +1,1 @@
-"installCommand": "corepack enable && corepack prepare pnpm@9 --activate && pnpm install --no-frozen-lockfile"
+{"installCommand":"npx pnpm@9 install --no-frozen-lockfile","buildCommand":"npx pnpm@9 --filter @workspace/stock-opname build","outputDirectory":"artifacts/stock-opname/dist"}
