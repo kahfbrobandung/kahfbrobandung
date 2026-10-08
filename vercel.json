@@ -1,5 +1,0 @@
-{
-  "buildCommand": "pnpm --filter @workspace/stock-opname run build",
-  "outputDirectory": "artifacts/stock-opname/dist",
-  "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }]
-}
