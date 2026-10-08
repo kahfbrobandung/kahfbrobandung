@@ -1,0 +1,5 @@
+{
+  "installCommand": "pnpm install --no-frozen-lockfile",
+  "buildCommand": "pnpm --filter @workspace/stock-opname build",
+  "outputDirectory": "artifacts/stock-opname/dist"
+}
