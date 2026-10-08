@@ -1,6 +1,6 @@
 {
   "buildCommand": "pnpm --filter @workspace/stock-opname run build",
-  "outputDirectory": "artifacts/stock-opname/dist",
+  "outputDirectory": "artifacts/stock-opname/dist/public",
   "framework": "vite",
   "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }]
 }
