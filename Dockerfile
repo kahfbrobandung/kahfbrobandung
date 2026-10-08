@@ -10,8 +10,6 @@ RUN pnpm install --no-frozen-lockfile
 
 RUN pnpm --filter @workspace/api-server build
 
-WORKDIR /app/artifacts/api-server
-
 EXPOSE 3000
 
-CMD ["pnpm", "start"]
+CMD sh -c "cd /app && pnpm --filter @workspace/db exec drizzle-kit push --force || true; cd /app/artifacts/api-server && pnpm start"
