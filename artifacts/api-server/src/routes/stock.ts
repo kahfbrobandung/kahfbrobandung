@@ -232,49 +232,74 @@ router.get("/stock-balances", async (req, res) => {
 });
 
 router.post("/stock-entries", async (req, res) => {
-  const parsed = CreateStockEntryBody.safeParse(req.body);
-  if (!parsed.success) {
-    res.status(400).json({ error: "Data stok tidak valid." });
-    return;
-  }
-
-  const result = await db.transaction(async (tx) => {
-    const [created] = await tx
-      .insert(stockEntriesTable)
-      .values({
-        ...parsed.data,
-        quantity: parsed.data.transaction === "Koreksi Stok -" ? -parsed.data.quantity : parsed.data.quantity,
-        displayQuantity: parsed.data.transaction === "Koreksi Stok -" ? -parsed.data.displayQuantity : parsed.data.displayQuantity,
-        secondaryDisplayQuantity: parsed.data.transaction === "Koreksi Stok -" ? -parsed.data.secondaryDisplayQuantity : parsed.data.secondaryDisplayQuantity,
-        warehouseQuantity: parsed.data.transaction === "Koreksi Stok -" ? -parsed.data.warehouseQuantity : parsed.data.warehouseQuantity,
-        sourceType: "manual",
-        sourceId: null,
-        occurredAt: new Date(),
-        syncStatus: "pending",
-      })
-      .onConflictDoNothing({ target: stockEntriesTable.clientId })
-      .returning();
-
-    if (!created) {
-      const [existing] = await tx
-        .select()
-        .from(stockEntriesTable)
-        .where(eq(stockEntriesTable.clientId, parsed.data.clientId))
-        .limit(1);
-      return { entry: existing, created: false };
+  try {
+    // 1. Validasi Zod dengan Error Handling yang Lebih Baik
+    const parsed = CreateStockEntryBody.safeParse(req.body);
+    if (!parsed.success) {
+      logger.warn({ body: req.body, errors: parsed.error.format() }, "Invalid stock entry payload");
+      res.status(400).json({
+        error: "Data stok tidak valid.",
+        details: parsed.error.errors.map(e => ({ path: e.path.join('.'), message: e.message }))
+      });
+      return;
     }
 
-    await reconcileStockLedger(tx, created.store, created.barcode);
-    return { entry: created, created: true };
-  });
+    // 2. Transaksi Database dengan Try-Catch
+    const result = await db.transaction(async (tx) => {
+      const [created] = await tx
+        .insert(stockEntriesTable)
+        .values({
+          ...parsed.data,
+          quantity: parsed.data.transaction === "Koreksi Stok -" ? -parsed.data.quantity : parsed.data.quantity,
+          displayQuantity: parsed.data.transaction === "Koreksi Stok -" ? -parsed.data.displayQuantity : parsed.data.displayQuantity,
+          secondaryDisplayQuantity: parsed.data.transaction === "Koreksi Stok -" ? -parsed.data.secondaryDisplayQuantity : parsed.data.secondaryDisplayQuantity,
+          warehouseQuantity: parsed.data.transaction === "Koreksi Stok -" ? -parsed.data.warehouseQuantity : parsed.data.warehouseQuantity,
+          sourceType: "manual",
+          sourceId: null,
+          occurredAt: new Date(),
+          syncStatus: "pending",
+        })
+        .onConflictDoNothing({ target: stockEntriesTable.clientId })
+        .returning();
 
-  if (!result.entry) {
-    res.status(500).json({ error: "Data stok gagal disimpan di server." });
-    return;
+      if (!created) {
+        const [existing] = await tx
+          .select()
+          .from(stockEntriesTable)
+          .where(eq(stockEntriesTable.clientId, parsed.data.clientId))
+          .limit(1);
+        return { entry: existing, created: false };
+      }
+
+      await reconcileStockLedger(tx, created.store, created.barcode);
+      return { entry: created, created: true };
+    });
+
+    if (!result.entry) {
+      res.status(500).json({ error: "Data stok gagal disimpan di server (tidak ada entri yang dibuat)." });
+      return;
+    }
+
+    // 3. Kirim Response ke Frontend TERLEBIH DAHULU agar tidak timeout
+    res.status(201).json(responseData(result.entry));
+
+    // 4. Lakukan Sinkronisasi Spreadsheet di Background (Asynchronous)
+    if (result.created) {
+      // Tidak menggunakan 'await' agar frontend tidak menunggu proses ini
+      void updateSyncStatus(result.entry).catch((err) => {
+        logger.error({ err, entryId: result.entry?.id }, "Background sync failed");
+      });
+    }
+
+  } catch (error) {
+    // 5. Tangkap Error Transaksi/Database yang tidak terduga
+    logger.error({ err: error, body: req.body }, "Failed to process stock entry");
+    const message = error instanceof Error ? error.message : "Terjadi kesalahan pada server";
+    res.status(500).json({ 
+      error: "Gagal memproses data stok.", 
+      details: message 
+    });
   }
-
-  const updated = result.created ? await updateSyncStatus(result.entry) : result.entry;
-  res.status(201).json(responseData(updated));
 });
 
 router.post("/stock-entries/:id/retry-sync", async (req, res) => {
