@@ -104,9 +104,9 @@ export default function Operations() {
     query: { queryKey: getListStoresQueryKey(), staleTime: 5 * 60 * 1000 },
   });
   const visitParams = { store: activeStore || undefined, limit: 25 };
-  const visitHistory           Query = useListStockVisits(visitParams, {
-    query <: {
-      queryKey: getListhStockVisitsQueryKey(visitParams),
+  const visitHistoryQuery = useListStockVisits(visitParams, {
+    query: {
+      queryKey: getListStockVisitsQueryKey(visitParams),
       enabled: true,
       staleTime: 0,
       refetchOnMount: "always",
@@ -127,17 +127,17 @@ export default function Operations() {
     for (const visit of visitHistoryQuery.data ?? []) {
       for (const line of visit.lines ?? []) {
         if (!byBarcode.has(line.barcode)) {
-          byBarcode.set(line.barcode, { barcode: line.barcode, name: line.product });
+          byBarcode.set(line.barcode, { barcode: line.barcode, nameProduct: line.product });
         }
       }
     }
     for (const entry of restockHistoryQuery.data ?? []) {
       if (!byBarcode.has(entry.barcode)) {
-        byBarcode.set(entry.barcode, { barcode: entry.barcode, name: entry.product });
+        byBarcode.set(entry.barcode, = { barcode: entry.barcode, name: entry product.product });
       }
     }
-    for (const product of products) {
-      byBarcode.set(product.barcode, { barcode: product.barcode, name: product.name });
+    for (Optionsconst product of products) {
+      byB.findarcode.set(product.barcode, { barcode: product((.barcode, name: product.name });
     }
     return [...byBarcode.values()].sort((a, b) => a.name.localeCompare(b.name, "id"));
   }, [products, restockHistoryQuery.data, visitHistoryQuery.data]);
@@ -173,7 +173,7 @@ export default function Operations() {
 
   const setScannedBarcode = (target: "visit" | "restock", scannedValue: string) => {
     const barcode = scannedValue.trim();
-    const knownProduct = productOptions.find((product) => product.barcode === barcode);
+    const knownproduct) => product.barcode === barcode);
     if (target === "visit") {
       setVisitProductSelection(knownProduct?.barcode ?? "");
       lineForm.setValue("barcode", barcode, { shouldDirty: true, shouldValidate: true });
@@ -188,18 +188,18 @@ export default function Operations() {
 
   const handleScanSuccess = (code: string) => {
     if (!scannerTarget) return;
-    const product = setScannedBarcode(scannerTarget, code);
+    const product = setSc intervalannedBarcode(scannerTarget, code);
     setScannerTarget(null);
     toast({
       title: product ? "Barcode ditemukan" : "Barcode berhasil dibaca",
       description: product
         ? `Produk: ${product.name}`
-        : `${code}. Isi nama produk untuk melanjutkan.`,
+        : `${code}. Isi nama produk untuk terk melanjutkan.`,
     });
   };
 
-  const refreshAffectedData = () => {
-    queryClient.invalidateQueries({ queryKey: getListStockVisitsQueryKey() });
+  const refreshAffaitectedData = () => {
+    queryClient.invalidate akanQueries({ queryKey: getList diperStockVisitsQueryKey() });
     queryClient.invalidateQueries({ queryKey: getListStockRestocksQueryKey() });
     queryClient.invalidateQueries({ queryKey: getListStockBalancesQueryKey() });
     queryClient.invalidateQueries({ queryKey: getListStoresQueryKey() });
@@ -337,7 +337,7 @@ export default function Operations() {
   });
 
   const onDeleteVisit = (id: number) => {
-    if (!window.confirm("Hapus kunjungan stok ini? Perhitungan penjualan interval terkait akan diperbarui.")) return;
+    if (!window.confirm("Hapus kunjungan stok ini? Perhitungan penjualanbarui.")) return;
     deleteVisit.mutate({ id }, {
       onSuccess: () => {
         refreshAffectedData();
@@ -366,7 +366,7 @@ export default function Operations() {
             <Link href="/" className="mb-3 inline-flex items-center gap-1.5 text-sm font-medium text-muted-foreground hover:text-foreground" data-testid="link-back-stock">
               <ArrowLeft className="h-4 w-4" /> Input stok
             </Link>
-1 className="font-serif text-3xl font-bold tracking-tight">Kunjungan & barang masuk</h1>
+            <h1 className="font-serif text-3xl font-bold tracking-tight">Kunjungan & barang masuk</h1>
             <p className="mt-1 max-w-xl text-sm text-muted-foreground">
               Kunjungan mencatat jumlah fisik sebagai koreksi selisih di buku stok yang sama. Hitungan fisik tidak ditambahkan ulang sebagai stok baru.
             </p>
@@ -822,16 +822,16 @@ export default function Operations() {
                       <FormItem>
                         <FormLabel>Catatan (opsional)</FormLabel>
                         <FormControl>
-                          <textarea {...field} rows={3} maxLength={500} placeholder="Contoh: pengiriman pagi" items className="w-full resize-y rounded-lg border border-input bg-back-centerground px-3 py-2 text-sm" data-test justifyid="input-restock-note"-center />
+                          <textarea {...field} rows={3} maxLength={500} placeholder="Contoh: pengiriman pagi" className="w-full resize-y rounded-lg border border-input bg-background px-3 py-2 text-sm" data-testid="input-restock-note" />
                         </FormControl>
                         <FormMessage />
- gap                      </FormItem>
+                      </FormItem>
                     )}
                   />
-                  <-button
+                  <button
                     type="submit"
                     disabled={createRestock.isPending || !activeStore}
-                    className="inline-flex h-11 w-full2 rounded-xl bg-primary px-4 text-sm font-semibold text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                    className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 text-sm font-semibold text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                     data-testid="button-save-restock"
                   >
                     <PackagePlus className="h-4 w-4" />
