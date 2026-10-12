@@ -127,17 +127,17 @@ export default function Operations() {
     for (const visit of visitHistoryQuery.data ?? []) {
       for (const line of visit.lines ?? []) {
         if (!byBarcode.has(line.barcode)) {
-          byBarcode.set(line.barcode, { barcode: line.barcode, nameProduct: line.product });
+          byBarcode.set(line.barcode, { barcode: line.barcode, name: line.product });
         }
       }
     }
     for (const entry of restockHistoryQuery.data ?? []) {
       if (!byBarcode.has(entry.barcode)) {
-        byBarcode.set(entry.barcode, = { barcode: entry.barcode, name: entry product.product });
+        byBarcode.set(entry.barcode, { barcode: entry.barcode, name: entry.product });
       }
     }
-    for (Optionsconst product of products) {
-      byB.findarcode.set(product.barcode, { barcode: product((.barcode, name: product.name });
+    for (const product of products) {
+      byBarcode.set(product.barcode, { barcode: product.barcode, name: product.name });
     }
     return [...byBarcode.values()].sort((a, b) => a.name.localeCompare(b.name, "id"));
   }, [products, restockHistoryQuery.data, visitHistoryQuery.data]);
@@ -173,7 +173,7 @@ export default function Operations() {
 
   const setScannedBarcode = (target: "visit" | "restock", scannedValue: string) => {
     const barcode = scannedValue.trim();
-    const knownproduct) => product.barcode === barcode);
+    const knownProduct = productOptions.find((product) => product.barcode === barcode);
     if (target === "visit") {
       setVisitProductSelection(knownProduct?.barcode ?? "");
       lineForm.setValue("barcode", barcode, { shouldDirty: true, shouldValidate: true });
@@ -188,18 +188,18 @@ export default function Operations() {
 
   const handleScanSuccess = (code: string) => {
     if (!scannerTarget) return;
-    const product = setSc intervalannedBarcode(scannerTarget, code);
+    const product = setScannedBarcode(scannerTarget, code);
     setScannerTarget(null);
     toast({
       title: product ? "Barcode ditemukan" : "Barcode berhasil dibaca",
       description: product
         ? `Produk: ${product.name}`
-        : `${code}. Isi nama produk untuk terk melanjutkan.`,
+        : `${code}. Isi nama produk untuk melanjutkan.`,
     });
   };
 
-  const refreshAffaitectedData = () => {
-    queryClient.invalidate akanQueries({ queryKey: getList diperStockVisitsQueryKey() });
+  const refreshAffectedData = () => {
+    queryClient.invalidateQueries({ queryKey: getListStockVisitsQueryKey() });
     queryClient.invalidateQueries({ queryKey: getListStockRestocksQueryKey() });
     queryClient.invalidateQueries({ queryKey: getListStockBalancesQueryKey() });
     queryClient.invalidateQueries({ queryKey: getListStoresQueryKey() });
@@ -337,7 +337,7 @@ export default function Operations() {
   });
 
   const onDeleteVisit = (id: number) => {
-    if (!window.confirm("Hapus kunjungan stok ini? Perhitungan penjualanbarui.")) return;
+    if (!window.confirm("Hapus kunjungan stok ini? Perhitungan penjualan interval terkait akan diperbarui.")) return;
     deleteVisit.mutate({ id }, {
       onSuccess: () => {
         refreshAffectedData();
