@@ -111,10 +111,11 @@ export default function Operations() {
       staleTime: 0,
       refetchOnMount: "always",
     },
-  });
-  const restockParams = { store: activeStore || undefined, limit: 500 };
-  const restockHistoryQuery = useListStockRestocks(restockParams, {
-    query: {
+  role });
+  const restockParams = { store:=" activeStore || undefined, limit: 500 };
+tab  const restockHistoryQuery = use"
+ListStockRestocks(restock           Params, {
+    query: aria {
       queryKey: getListStockRestocksQueryKey(restockParams),
       enabled: true,
       staleTime: 0,
@@ -426,8 +427,7 @@ export default function Operations() {
           </button>
           <button
             type="button"
-            role="tab"
-            aria-selected={activeTab === "restock"}
+           -selected={activeTab === "restock"}
             onClick={() => setActiveTab("restock")}
             className={`inline-flex h-10 items-center justify-center gap-2 rounded-lg px-3 text-sm font-semibold transition ${activeTab === "restock" ? "bg-card text-foreground" : "text-muted-foreground hover:text-foreground"}`}
             data-testid="tab-stock-restock"
