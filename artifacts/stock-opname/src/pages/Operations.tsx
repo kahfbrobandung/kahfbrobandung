@@ -13,13 +13,11 @@ import {
   getListStoresQueryKey,
   useCreateStockRestock,
   useCreateStockVisit,
-  useClearStockRestockInvoice,
   useDeleteStockRestock,
   useDeleteStockVisit,
   useListStockRestocks,
   useListStockVisits,
   useListStores,
-  useUpdateStockRestockInvoice,
   type StockRestock,
   type StocktakeLineInput,
 } from "@workspace/api-client-react";
@@ -28,21 +26,11 @@ import { useStoreName } from "@/hooks/useStoreName";
 import { useToast } from "@/hooks/use-toast";
 import { BarcodeScanner } from "@/components/BarcodeScanner";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
-import { ArrowLeft, Boxes, Camera, ClipboardCheck, FileText, PackagePlus, Plus, Trash2 } from "lucide-react";
+import { ArrowLeft, Boxes, Camera, ClipboardCheck, PackagePlus, Plus, Trash2 } from "lucide-react";
 
 const integerText = z
   .string()
   .refine((value) => value === "" || /^\d+$/.test(value), "Masukkan bilangan bulat nol atau lebih.");
-
-function jakartaDateInput() {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Jakarta",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(new Date());
-  return `${parts.find((part) => part.type === "year")?.value}-${parts.find((part) => part.type === "month")?.value}-${parts.find((part) => part.type === "day")?.value}`;
-}
 
 const lineFormSchema = z
   .object({
@@ -106,12 +94,6 @@ export default function Operations() {
   const [visitProductSelection, setVisitProductSelection] = useState("");
   const [restockProductSelection, setRestockProductSelection] = useState("");
   const [lines, setLines] = useState<StocktakeLineInput[]>([]);
-  const [invoiceEditor, setInvoiceEditor] = useState<{
-    id: number;
-    invoiceNumber: string;
-    invoiceQuantity: string;
-    invoiceDate: string;
-  } | null>(null);
   const [restockSearch, setRestockSearch] = useState("");
   const queryClient = useQueryClient();
   const { toast } = useToast();
@@ -122,9 +104,9 @@ export default function Operations() {
     query: { queryKey: getListStoresQueryKey(), staleTime: 5 * 60 * 1000 },
   });
   const visitParams = { store: activeStore || undefined, limit: 25 };
-  const visitHistoryQuery = useListStockVisits(visitParams, {
-    query: {
-      queryKey: getListStockVisitsQueryKey(visitParams),
+  const visitHistory           Query = useListStockVisits(visitParams, {
+    query <: {
+      queryKey: getListhStockVisitsQueryKey(visitParams),
       enabled: true,
       staleTime: 0,
       refetchOnMount: "always",
@@ -159,12 +141,13 @@ export default function Operations() {
     }
     return [...byBarcode.values()].sort((a, b) => a.name.localeCompare(b.name, "id"));
   }, [products, restockHistoryQuery.data, visitHistoryQuery.data]);
+
   const visibleRestocks = useMemo(() => {
     const query = restockSearch.trim().toLocaleLowerCase("id-ID");
     const rows = restockHistoryQuery.data ?? [];
     if (!query) return rows;
     return rows.filter((entry) =>
-      [entry.product, entry.barcode, entry.store, entry.invoiceNumber ?? ""]
+      [entry.product, entry.barcode, entry.store]
         .some((value) => value.toLocaleLowerCase("id-ID").includes(query)),
     );
   }, [restockHistoryQuery.data, restockSearch]);
@@ -262,8 +245,6 @@ export default function Operations() {
   const createRestock = useCreateStockRestock();
   const deleteVisit = useDeleteStockVisit();
   const deleteRestock = useDeleteStockRestock();
-  const updateRestockInvoice = useUpdateStockRestockInvoice();
-  const clearRestockInvoice = useClearStockRestockInvoice();
 
   const onSaveVisit = visitForm.handleSubmit((values) => {
     if (!activeStore) {
@@ -355,76 +336,6 @@ export default function Operations() {
     );
   });
 
-  const onSaveInvoice = (event: React.FormEvent<HTMLFormElement>, entry: StockRestock) => {
-    event.preventDefault();
-    if (!invoiceEditor || invoiceEditor.id !== entry.id) return;
-    const invoiceNumber = invoiceEditor.invoiceNumber.trim();
-    const quantityText = invoiceEditor.invoiceQuantity.trim();
-    if (!invoiceNumber || !/^\d+$/.test(quantityText) || !invoiceEditor.invoiceDate) {
-      toast({
-        title: "Data faktur belum lengkap",
-        description: "Isi nomor, tanggal, dan jumlah barang pada faktur.",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    const invoiceQuantity = Number(quantityText);
-    const difference = invoiceQuantity - entry.quantity;
-    updateRestockInvoice.mutate(
-      {
-        id: entry.id,
-        data: {
-          invoiceNumber,
-          invoiceQuantity,
-          invoiceDate: invoiceEditor.invoiceDate,
-        },
-      },
-      {
-        onSuccess: () => {
-          setInvoiceEditor(null);
-          refreshAffectedData();
-          toast({
-            title: "Faktur dicocokkan",
-            description: difference === 0
-              ? `Jumlah faktur sama dengan ${entry.quantity} unit yang diterima.`
-              : `Koreksi stok ${difference > 0 ? "+" : ""}${difference} unit dicatat tanpa menambahkan seluruh jumlah faktur lagi.`,
-          });
-        },
-        onError: (error) => {
-          toast({
-            title: "Faktur belum tersimpan",
-            description: error.message || "Periksa koneksi lalu coba lagi.",
-            variant: "destructive",
-          });
-        },
-      },
-    );
-  };
-
-  const onClearInvoice = (entry: StockRestock) => {
-    if (!window.confirm(`Lepas faktur ${entry.invoiceNumber} dari penerimaan ${entry.product}? Koreksi jumlah stoknya akan dibatalkan.`)) return;
-    clearRestockInvoice.mutate(
-      { id: entry.id },
-      {
-        onSuccess: () => {
-          refreshAffectedData();
-          toast({
-            title: "Faktur dilepas",
-            description: "Koreksi faktur dibatalkan; jumlah barang yang diterima tetap tercatat.",
-          });
-        },
-        onError: (error) => {
-          toast({
-            title: "Faktur belum dilepas",
-            description: error.message || "Periksa koneksi lalu coba lagi.",
-            variant: "destructive",
-          });
-        },
-      },
-    );
-  };
-
   const onDeleteVisit = (id: number) => {
     if (!window.confirm("Hapus kunjungan stok ini? Perhitungan penjualan interval terkait akan diperbarui.")) return;
     deleteVisit.mutate({ id }, {
@@ -455,7 +366,7 @@ export default function Operations() {
             <Link href="/" className="mb-3 inline-flex items-center gap-1.5 text-sm font-medium text-muted-foreground hover:text-foreground" data-testid="link-back-stock">
               <ArrowLeft className="h-4 w-4" /> Input stok
             </Link>
-            <h1 className="font-serif text-3xl font-bold tracking-tight">Kunjungan & barang masuk</h1>
+1 className="font-serif text-3xl font-bold tracking-tight">Kunjungan & barang masuk</h1>
             <p className="mt-1 max-w-xl text-sm text-muted-foreground">
               Kunjungan mencatat jumlah fisik sebagai koreksi selisih di buku stok yang sama. Hitungan fisik tidak ditambahkan ulang sebagai stok baru.
             </p>
@@ -911,16 +822,16 @@ export default function Operations() {
                       <FormItem>
                         <FormLabel>Catatan (opsional)</FormLabel>
                         <FormControl>
-                          <textarea {...field} rows={3} maxLength={500} placeholder="Contoh: pengiriman pagi" className="w-full resize-y rounded-lg border border-input bg-background px-3 py-2 text-sm" data-testid="input-restock-note" />
+                          <textarea {...field} rows={3} maxLength={500} placeholder="Contoh: pengiriman pagi" items className="w-full resize-y rounded-lg border border-input bg-back-centerground px-3 py-2 text-sm" data-test justifyid="input-restock-note"-center />
                         </FormControl>
                         <FormMessage />
-                      </FormItem>
+ gap                      </FormItem>
                     )}
                   />
-                  <button
+                  <-button
                     type="submit"
                     disabled={createRestock.isPending || !activeStore}
-                    className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 text-sm font-semibold text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                    className="inline-flex h-11 w-full2 rounded-xl bg-primary px-4 text-sm font-semibold text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                     data-testid="button-save-restock"
                   >
                     <PackagePlus className="h-4 w-4" />
@@ -933,15 +844,15 @@ export default function Operations() {
             <section className="rounded-2xl border border-border bg-card p-5">
               <h2 className="font-serif text-xl font-bold">Barang masuk terakhir</h2>
               <p className="mb-4 mt-1 text-sm text-muted-foreground">
-                {activeStore ? `Riwayat ${activeStore}` : "Semua toko; cocokkan faktur per barang yang diterima. Setiap baris faktur dapat memakai nomor yang sama."}
+                {activeStore ? `Riwayat ${activeStore}` : "Semua toko."}
               </p>
               <label className="mb-4 block">
-                <span className="sr-only">Cari barang masuk atau faktur</span>
+                <span className="sr-only">Cari barang masuk</span>
                 <input
                   type="search"
                   value={restockSearch}
                   onChange={(event) => setRestockSearch(event.target.value)}
-                  placeholder="Cari produk, barcode, toko, atau nomor faktur"
+                  placeholder="Cari produk, barcode, atau toko"
                   className="h-10 w-full rounded-lg border border-input bg-background px-3 text-sm"
                   data-testid="input-search-restocks"
                 />
@@ -966,7 +877,6 @@ export default function Operations() {
                 <>
                 <ul className="max-h-[44rem] space-y-3 overflow-y-auto pr-1">
                   {visibleRestocks.map((entry) => {
-                    const invoiceDifference = (entry.invoiceQuantity ?? entry.quantity) - entry.quantity;
                     return (
                     <li key={entry.id} className="rounded-xl border border-border p-3" data-testid={`row-restock-history-${entry.id}`}>
                       <div className="flex items-start justify-between gap-3">
@@ -977,11 +887,6 @@ export default function Operations() {
                           <p className="mt-2 text-xs text-muted-foreground">
                             Diterima {entry.quantity} unit · jumlah efektif {entry.effectiveQuantity} unit
                           </p>
-                          {entry.invoiceNumber && (
-                            <p className="mt-1 text-xs text-muted-foreground">
-                              Faktur {entry.invoiceNumber} · {entry.invoiceDate} · koreksi stok {invoiceDifference > 0 ? "+" : ""}{invoiceDifference} unit
-                            </p>
-                          )}
                         </div>
                         <div className="flex shrink-0 flex-col items-end gap-2">
                           <span className="font-mono text-lg font-bold">+{entry.effectiveQuantity}</span>
@@ -995,93 +900,9 @@ export default function Operations() {
                             >
                               <Trash2 className="h-3.5 w-3.5" /> Hapus
                             </button>
-                            <button
-                              type="button"
-                              onClick={() => setInvoiceEditor({
-                                id: entry.id,
-                                invoiceNumber: entry.invoiceNumber ?? "",
-                                invoiceQuantity: String(entry.invoiceQuantity ?? entry.quantity),
-                                invoiceDate: entry.invoiceDate ?? jakartaDateInput(),
-                              })}
-                              className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border px-2.5 text-xs font-semibold hover:bg-muted"
-                              data-testid={`button-match-invoice-${entry.id}`}
-                            >
-                              <FileText className="h-3.5 w-3.5" /> {entry.invoiceNumber ? "Ubah faktur" : "Cocokkan faktur"}
-                            </button>
-                            {entry.invoiceNumber && (
-                              <button
-                                type="button"
-                                onClick={() => onClearInvoice(entry)}
-                                disabled={clearRestockInvoice.isPending}
-                                className="inline-flex h-8 items-center rounded-lg border border-destructive/30 px-2.5 text-xs font-semibold text-destructive hover:bg-destructive/5 disabled:opacity-50"
-                                data-testid={`button-clear-invoice-${entry.id}`}
-                              >
-                                Lepas
-                              </button>
-                            )}
                           </div>
                         </div>
                       </div>
-                      {invoiceEditor?.id === entry.id && (
-                        <form onSubmit={(event) => onSaveInvoice(event, entry)} className="mt-4 grid gap-3 border-t border-border pt-4 sm:grid-cols-3" data-testid={`form-match-invoice-${entry.id}`}>
-                          <label className="text-xs font-semibold">
-                            Nomor faktur
-                            <input
-                              value={invoiceEditor.invoiceNumber}
-                              onChange={(event) => setInvoiceEditor({ ...invoiceEditor, invoiceNumber: event.target.value })}
-                              maxLength={120}
-                              required
-                              className="mt-1 h-10 w-full rounded-lg border border-input bg-background px-3 text-sm font-normal"
-                              data-testid={`input-invoice-number-${entry.id}`}
-                            />
-                          </label>
-                          <label className="text-xs font-semibold">
-                            Jumlah pada faktur
-                            <input
-                              type="number"
-                              min="0"
-                              step="1"
-                              inputMode="numeric"
-                              value={invoiceEditor.invoiceQuantity}
-                              onChange={(event) => setInvoiceEditor({ ...invoiceEditor, invoiceQuantity: event.target.value })}
-                              required
-                              className="mt-1 h-10 w-full rounded-lg border border-input bg-background px-3 text-sm font-normal"
-                              data-testid={`input-invoice-quantity-${entry.id}`}
-                            />
-                          </label>
-                          <label className="text-xs font-semibold">
-                            Tanggal faktur
-                            <input
-                              type="date"
-                              value={invoiceEditor.invoiceDate}
-                              onChange={(event) => setInvoiceEditor({ ...invoiceEditor, invoiceDate: event.target.value })}
-                              required
-                              className="mt-1 h-10 w-full rounded-lg border border-input bg-background px-3 text-sm font-normal"
-                              data-testid={`input-invoice-date-${entry.id}`}
-                            />
-                          </label>
-                          <p className="text-xs text-muted-foreground sm:col-span-3">
-                            Penerimaan awal {entry.quantity} unit tetap tersimpan. Selisih faktur akan dikoreksi saat faktur dicatat, tanpa menambahkan jumlah penuh untuk kedua kalinya.
-                          </p>
-                          <div className="flex gap-2 sm:col-span-3">
-                            <button
-                              type="submit"
-                              disabled={updateRestockInvoice.isPending || clearRestockInvoice.isPending}
-                              className="inline-flex h-9 items-center gap-2 rounded-lg bg-primary px-3 text-xs font-semibold text-primary-foreground disabled:opacity-50"
-                              data-testid={`button-save-invoice-${entry.id}`}
-                            >
-                              {updateRestockInvoice.isPending ? "Menyimpan..." : "Simpan kecocokan"}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => setInvoiceEditor(null)}
-                              className="inline-flex h-9 items-center rounded-lg border border-border px-3 text-xs font-semibold hover:bg-muted"
-                            >
-                              Batal
-                            </button>
-                          </div>
-                        </form>
-                      )}
                     </li>
                   );
                   })}
