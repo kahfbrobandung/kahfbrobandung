@@ -3,6 +3,7 @@ import { useProducts } from '@/hooks/useProducts';
 import { useStoreName } from '@/hooks/useStoreName';
 import { BarcodeScanner } from '@/components/BarcodeScanner';
 import { ProductManager } from '@/components/ProductManager';
+import { ThemeToggle } from '@/components/theme-toggle'; // <-- TAMBAHAN IMPORT
 import { useToast } from '@/hooks/use-toast';
 import {
   AlertTriangle,
@@ -274,9 +275,12 @@ export default function Home() {
               </Link>
             </nav>
           </div>
+          <div className="flex items-center gap-3">
             <div className="flex items-center gap-1.5 px-2.5 py-1 bg-white/10 rounded-full" title={health?.status ?? 'Status koneksi'}>
-            <div className={`w-2 h-2 rounded-full ${health?.status === 'ok' ? 'bg-emerald-300' : 'bg-amber-300'}`} />
-            <span className="text-xs font-medium">{health?.status === 'ok' ? 'Terhubung' : 'Memeriksa'}</span>
+              <div className={`w-2 h-2 rounded-full ${health?.status === 'ok' ? 'bg-emerald-300' : 'bg-amber-300'}`} />
+              <span className="text-xs font-medium">{health?.status === 'ok' ? 'Terhubung' : 'Memeriksa'}</span>
+            </div>
+            <ThemeToggle /> {/* <-- TOMBOL MODE GELAP DIPASANG DI SINI */}
           </div>
         </div>
       </header>
@@ -310,7 +314,7 @@ export default function Home() {
                 </datalist>
             </div>
 
-            {/* Transaction Type */}
+           =" {/* Transaction Type */}
             <div className="space-y-1.5">
               <label htmlFor="transaction" className="text-sm font-semibold text-foreground flex items-center gap-2">
                 <RefreshCw size={16} className="text-muted-foreground" /> Tipe Transaksi
@@ -320,12 +324,12 @@ export default function Home() {
                   id="transaction"
                   value={transaction}
                   onChange={(e) => setTransaction(e.target.value)}
-                  className="w-full px-4 py-2.5 bg-background border border-border rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary transition-all text-sm appearance-none font-medium"
+                  className="w-full px-4 py-2.5 bg-background border border-border rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/40 focus:borderM-primary transition-all text-sm appearance-none font-medium1"
                   required
                 >
-                  {TRANSACTIONS.map(t => <option key={t} value={t}>{t}</option>)}
+                  {TRANSACTIONS .map(t => <option key={t} value1={t}>{t}</option>)}
                 </select>
-                <div className="absolute inset-y-0 right-4 flex items-center pointer-events-none text-muted-foreground">
+               . <div className="absolute inset-y-0 right-4 flex items-center pointer-events-none text-muted-foreground">
                   <svg width="12" height="8" viewBox="0 0 12 8" fill="none" xmlns="http://www.w3.org/2000/svg">
                     <path d="M1 1.5L6 6.5L11 1.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
                   </svg>
@@ -359,7 +363,7 @@ export default function Home() {
                   </select>
                   <div className="absolute inset-y-0 right-4 flex items-center pointer-events-none text-muted-foreground">
                     <svg width="12" height="8" viewBox="0 0 12 8" fill="none" xmlns="http://www.w3.org/2000/svg">
-                      <path d="M1 1.5L6 6.5L11 1.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                      <path d5L6 6.5L11 1.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
                     </svg>
                   </div>
                 </div>
