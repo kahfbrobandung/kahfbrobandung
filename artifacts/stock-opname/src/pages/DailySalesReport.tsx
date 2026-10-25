@@ -187,8 +187,16 @@ export default function DailySalesReport() {
               ) : (
                 <div className="overflow-x-auto">
                   <table className="w-full min-w-[1050px] text-left text-sm">
+                    {/* BAGIAN HEADER TABEL YANG DIUBAH */}
                     <thead className="bg-muted/60 text-[10px] uppercase tracking-[.12em] text-muted-foreground"><tr>
-                      <th className="px-5 py-3 font-bold">Tgl kunjungan</th><th className="px-4 py-3 font-bold">Toko / produk</th><th className="px-4 py-3 font-bold">Periode stok</th><th className="px-4 py-3 text-right font-bold">Stok awal</th><th className="px-4 py-3 text-right font-bold">Barang masuk</th><th className="px-4 py-3 text-right font-bold">Koreksi</th><th className="px-4 py-3 text-right font-bold">Hitung fisik</th><th className="px-5 py-3 text-right font-bold">Terjual</th>
+                      <th className="px-5 py-3 font-bold">Tgl kunjungan</th>
+                      <th className="px-4 py-3 font-bold">Toko / produk</th>
+                      <th className="px-4 py-3 font-bold">Periode stok</th>
+                      <th className="px-4 py-3 text-right font-bold">Terjual</th>
+                      <th className="px-4 py-3 text-right font-bold">Stok awal</th>
+                      <th className="px-4 py-3 text-right font-bold">Barang masuk</th>
+                      <th className="px-4 py-3 text-right font-bold">Koreksi</th>
+                      <th className="px-4 py-3 text-right font-bold">Hitung fisik</th>
                     </tr></thead>
                     <tbody className="divide-y divide-border">
                       {calculations.map((row, index) => (
@@ -196,11 +204,9 @@ export default function DailySalesReport() {
                           <td className="whitespace-nowrap px-5 py-4 align-top"><span className="block font-semibold">{shortDate(row.currentVisitAt)}</span><span className="mt-1 block text-[11px] text-muted-foreground">{timestamp(row.currentVisitAt)}</span></td>
                           <td className="px-4 py-4 align-top"><span className="block max-w-52 truncate font-semibold">{row.product}</span><span className="mt-1 block text-[11px] text-muted-foreground">{row.store}</span><span className="mt-1 block font-mono text-[10px] text-muted-foreground">{row.barcode}</span></td>
                           <td className="px-4 py-4 align-top text-xs text-muted-foreground"><span className="block">Sebelumnya <b className="font-medium text-foreground">{timestamp(row.previousVisitAt)}</b></span><span className="mt-1 block">Sekarang <b className="font-medium text-foreground">{timestamp(row.currentVisitAt)}</b></span></td>
-                          <td className="px-4 py-4 text-right font-mono">{number(row.previousStock)}</td>
-                          <td className="px-4 py-4 text-right font-mono text-primary">+{number(row.restockQuantity)}</td>
-                          <td className="px-4 py-4 text-right font-mono">{row.stockEntryAdjustment > 0 ? "+" : ""}{number(row.stockEntryAdjustment)}</td>
-                          <td className="px-4 py-4 text-right font-mono">{number(row.currentStock)}</td>
-                          <td className="px-5 py-4 text-right">
+                          
+                          {/* KOLOM TERJUAL DIPINDAH KE SINI */}
+                          <td className="px-4 py-4 text-right">
                             {row.soldQuantity < 0 ? (
                               <span className="inline-flex flex-col items-end" data-testid={`text-derived-sold-${row.barcode}-${index}`}>
                                 <span className="inline-flex items-center gap-1 rounded-lg bg-amber-100 px-2.5 py-1.5 text-[10px] font-bold uppercase tracking-wide text-amber-900"><CircleAlert className="h-3.5 w-3.5"/> Variansi stok</span>
@@ -211,6 +217,11 @@ export default function DailySalesReport() {
                             )}
                             {row.hasStockVariance && row.soldQuantity >= 0 && <span className="mt-1 block text-[9px] font-bold uppercase tracking-wider text-amber-800">Variansi</span>}
                           </td>
+
+                          <td className="px-4 py-4 text-right font-mono">{number(row.previousStock)}</td>
+                          <td className="px-4 py-4 text-right font-mono text-primary">+{number(row.restockQuantity)}</td>
+                          <td className="px-4 py-4 text-right font-mono">{row.stockEntryAdjustment > 0 ? "+" : ""}{number(row.stockEntryAdjustment)}</td>
+                          <td className="px-4 py-4 text-right font-mono">{number(row.currentStock)}</td>
                         </tr>
                       ))}
                     </tbody>
