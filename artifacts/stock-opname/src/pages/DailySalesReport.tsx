@@ -10,7 +10,7 @@ import {
   type GetDailySalesParams,
   type GetSalesMonitorParams,
 } from "@workspace/api-client-react";
-import { ArrowDownRight, ArrowLeft, ArrowUpRight, CalendarDays, ChartNoAxesCombined, CircleAlert, Clock3, RefreshCw } from "lucide-react";
+import { ArrowLeft, ArrowUpRight, CalendarDays, ChartNoAxesCombined, CircleAlert, Clock3, RefreshCw } from "lucide-react";
 
 const number = (value: number) => new Intl.NumberFormat("id-ID").format(value);
 const shortDate = (value: string) => {
@@ -57,7 +57,6 @@ export default function DailySalesReport() {
     query: { queryKey: getGetDailySalesQueryKey(legacyParams), enabled: validRange, staleTime: 30_000 },
   });
   const calculations = monitor.data?.calculations ?? [];
-  const dailyTrend = monitor.data?.dailyTrend ?? [];
   const derivedTotal = calculations.reduce((sum, row) => sum + Math.max(0, row.soldQuantity), 0);
   const varianceCount = calculations.filter(row => row.hasStockVariance).length;
   const refresh = () => { void monitor.refetch(); void legacy.refetch(); };
@@ -141,42 +140,6 @@ export default function DailySalesReport() {
               </div>
             </section>
 
-            <section className="mb-5 overflow-hidden rounded-2xl border border-border bg-card shadow-sm" aria-label="Ringkasan penjualan per hari">
-              <div className="border-b border-border px-4 py-4 sm:px-6">
-                <p className="text-[10px] font-bold uppercase tracking-[.17em] text-[#967844]">Ringkasan harian</p>
-                <h2 className="mt-1 font-serif text-xl font-bold">Penjualan otomatis per hari</h2>
-                <p className="mt-1 text-xs text-muted-foreground">Penjualan dikelompokkan menurut tanggal kunjungan fisik terbaru pada setiap interval.</p>
-              </div>
-              {dailyTrend.length === 0 ? (
-                <p className="px-5 py-8 text-center text-xs text-muted-foreground" data-testid="status-daily-trend-empty">Belum ada perbandingan kunjungan pada periode ini.</p>
-              ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full min-w-[560px] text-left text-sm">
-                    <thead className="bg-muted/50 text-[10px] uppercase tracking-[.12em] text-muted-foreground">
-                      <tr>
-                        <th className="px-5 py-3 font-bold">Tanggal kunjungan</th>
-                        <th className="px-4 py-3 text-right font-bold">Terjual otomatis</th>
-                        <th className="px-5 py-3 text-right font-bold">Barang masuk dalam interval</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-border">
-                      {dailyTrend.map(day => (
-                        <tr key={day.date} className="transition-colors hover:bg-muted/30" data-testid={`row-daily-derived-sale-${day.date}`}>
-                          <td className="px-5 py-3.5 font-semibold">{shortDate(day.date)}</td>
-                          <td className="px-4 py-3.5 text-right font-mono font-bold text-primary" data-testid={`text-daily-derived-sale-${day.date}`}>
-                            <span className="inline-flex items-center justify-end gap-1"><ArrowUpRight className="h-3.5 w-3.5" />{number(day.soldQuantity)} unit</span>
-                          </td>
-                          <td className="px-5 py-3.5 text-right font-mono text-muted-foreground" data-testid={`text-daily-restock-${day.date}`}>
-                            <span className="inline-flex items-center justify-end gap-1"><ArrowDownRight className="h-3.5 w-3.5" />{number(day.restockQuantity)} unit</span>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </section>
-
             <section className="mb-6 overflow-hidden rounded-2xl border border-border bg-card shadow-sm" aria-label="Penjualan otomatis per kunjungan">
               <div className="flex flex-wrap items-end justify-between gap-3 border-b border-border px-4 py-4 sm:px-6">
                 <div><p className="text-[10px] font-bold uppercase tracking-[.17em] text-[#967844]">Sumber utama</p><h2 className="mt-1 font-serif text-xl font-bold">Penjualan per interval kunjungan</h2><p className="mt-1 text-xs text-muted-foreground">Setiap baris dikelompokkan pada tanggal kunjungan fisik terbaru.</p></div>
@@ -187,7 +150,6 @@ export default function DailySalesReport() {
               ) : (
                 <div className="overflow-x-auto">
                   <table className="w-full min-w-[1050px] text-left text-sm">
-                    {/* BAGIAN HEADER TABEL YANG DIUBAH */}
                     <thead className="bg-muted/60 text-[10px] uppercase tracking-[.12em] text-muted-foreground"><tr>
                       <th className="px-5 py-3 font-bold">Tgl kunjungan</th>
                       <th className="px-4 py-3 font-bold">Toko / produk</th>
@@ -205,7 +167,6 @@ export default function DailySalesReport() {
                           <td className="px-4 py-4 align-top"><span className="block max-w-52 truncate font-semibold">{row.product}</span><span className="mt-1 block text-[11px] text-muted-foreground">{row.store}</span><span className="mt-1 block font-mono text-[10px] text-muted-foreground">{row.barcode}</span></td>
                           <td className="px-4 py-4 align-top text-xs text-muted-foreground"><span className="block">Sebelumnya <b className="font-medium text-foreground">{timestamp(row.previousVisitAt)}</b></span><span className="mt-1 block">Sekarang <b className="font-medium text-foreground">{timestamp(row.currentVisitAt)}</b></span></td>
                           
-                          {/* KOLOM TERJUAL DIPINDAH KE SINI */}
                           <td className="px-4 py-4 text-right">
                             {row.soldQuantity < 0 ? (
                               <span className="inline-flex flex-col items-end" data-testid={`text-derived-sold-${row.barcode}-${index}`}>
