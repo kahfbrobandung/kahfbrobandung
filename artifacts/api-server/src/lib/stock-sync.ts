@@ -5,6 +5,12 @@ const SHEETS_FORM_URL =
   "https://script.google.com/macros/s/AKfycbx993YnMgStwmOrelkMGSkbjAqPuVUXQFVoeatVZ8TPFvxHMoZK_P97eSjafnGpNGMZ/exec";
 
 export async function syncStockEntryToSpreadsheet(entry: StockEntry) {
+  // SINKRONISASI DIMATIKAN: Fungsi langsung berhenti di sini.
+  // Data stok tetap tersimpan aman di database aplikasi.
+  return;
+
+  /*
+  // Kode asli di bawah ini dinonaktifkan (dikomentari)
   const response = await fetch(SHEETS_FORM_URL, {
     method: "POST",
     headers: {
@@ -27,4 +33,5 @@ export async function syncStockEntryToSpreadsheet(entry: StockEntry) {
   }
 
   await response.text();
+  */
 }
