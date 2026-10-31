@@ -2,7 +2,8 @@ import { useMemo, useRef, useState } from "react";
 import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
-import { Link } from "wouter";
+// 1. TAMBAHKAN useLocation DI SINI
+import { Link, useLocation } from "wouter";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   getGetSalesActivityQueryKey,
@@ -86,6 +87,9 @@ function formatDate(value: string) {
 }
 
 export default function Operations() {
+  // 2. TAMBAHKAN HOOK INI UNTUK NAVIGASI
+  const [, setLocation] = useLocation();
+
   const { products } = useProducts();
   const [storeName, setStoreName] = useStoreName();
   const activeStore = storeName.trim();
@@ -343,7 +347,7 @@ export default function Operations() {
         refreshAffectedData();
         toast({ title: "Kunjungan dihapus", description: "Saldo dan perhitungan penjualan diperbarui." });
       },
-      onError: (error) => toast({ title: "Kunjungan belum dihapus", description: error.message || "Coba lagi.", variant: "destructive" }),
+      onError: (error) => toast({ title: "Kunjungan belum dihapus", description: errorus.message || "Coba lagi.", variant: "destructive" }),
     });
   };
 
@@ -352,7 +356,7 @@ export default function Operations() {
     deleteRestock.mutate({ id: entry.id }, {
       onSuccess: () => {
         refreshAffectedData();
-        toast({ title: "Barang masuk dihapus", description: "Saldo dan perhitungan penjualan diperbarui." });
+        toast({ title: "Barang masuk dihap", description: "Saldo dan perhitungan penjualan diperbarui." });
       },
       onError: (error) => toast({ title: "Barang masuk belum dihapus", description: error.message || "Coba lagi.", variant: "destructive" }),
     });
@@ -371,13 +375,17 @@ export default function Operations() {
               Kunjungan mencatat jumlah fisik sebagai koreksi selisih di buku stok yang sama. Hitungan fisik tidak ditambahkan ulang sebagai stok baru.
             </p>
           </div>
-          {/* TOMBOL PENJUALAN HARIAN DIGANTI MENJADI TAG <a> AGAR BISA DIKLIK */}
-          <a href="/dashboard" className="inline-flex h-10 items-center justify-center rounded-lg border border-border bg-card px-4 text-sm font-semibold hover:bg-muted" data-testid="link-sales-dashboard">
+          
+          {/* 3. TOMBOL INI SUDAH MENGGUNAKAN setLocation AGAR PASTI BISA DIKLIK */}
+          <button
+            type="button"
+            onClick={() => setLocation("/dashboard")}
+            className="inline-flex h-10 items-center justify-center rounded-lg border border-border bg-card px-4 text-sm font-semibold hover:bg-muted transition-colors"
+            data-testid="link-sales-dashboard"
+          >
             Penjualan harian
-          </a>
+          </button>
         </header>
-
-        {/* KOTAK SATU SALDO TERPADU SUDAH DIHAPUS DARI SINI */}
 
         <section className="mb-5 rounded-2xl border border-border bg-card p-5">
           <label htmlFor="active-store" className="mb-2 flex items-center gap-2 text-sm font-semibold">
