@@ -57,8 +57,6 @@ export default function DailySalesReport() {
     query: { queryKey: getGetDailySalesQueryKey(legacyParams), enabled: validRange, staleTime: 30_000 },
   });
   const calculations = monitor.data?.calculations ?? [];
-  const derivedTotal = calculations.reduce((sum, row) => sum + Math.max(0, row.soldQuantity), 0);
-  const varianceCount = calculations.filter(row => row.hasStockVariance).length;
   const refresh = () => { void monitor.refetch(); void legacy.refetch(); };
 
   return (
@@ -121,24 +119,7 @@ export default function DailySalesReport() {
           <section className="mb-5 grid gap-3 sm:grid-cols-3" aria-label="Memuat ringkasan"><div className="h-28 animate-pulse rounded-2xl bg-muted"/><div className="h-28 animate-pulse rounded-2xl bg-muted"/><div className="h-28 animate-pulse rounded-2xl bg-muted"/></section>
         ) : (
           <>
-            <section className="mb-5 grid gap-3 sm:grid-cols-3" aria-label="Ringkasan penjualan otomatis">
-              <div className="relative overflow-hidden rounded-2xl bg-primary p-5 text-primary-foreground sm:p-6">
-                <span className="absolute -right-3 -top-5 font-mono text-8xl font-bold text-white/[.07]">Σ</span>
-                <p className="text-[10px] font-bold uppercase tracking-[.17em] text-primary-foreground/70">Terjual · otomatis</p>
-                <p className="mt-2 font-mono text-4xl font-semibold tracking-tight" data-testid="text-derived-sales-total">{metric(derivedTotal)}<span className="ml-2 text-sm font-medium">unit</span></p>
-                <p className="mt-2 text-xs text-primary-foreground/70">Dihitung dari kunjungan fisik, bukan input Penjualan manual.</p>
-              </div>
-              <div className="rounded-2xl border border-border bg-card p-5 sm:p-6">
-                <p className="text-[10px] font-bold uppercase tracking-[.17em] text-muted-foreground">Perbandingan kunjungan</p>
-                <p className="mt-2 font-mono text-4xl font-semibold tracking-tight text-foreground" data-testid="text-visit-comparison-count">{metric(monitor.data?.summary.visitComparisons ?? calculations.length)}</p>
-                <p className="mt-2 text-xs text-muted-foreground">Interval toko dan SKU pada periode terpilih.</p>
-              </div>
-              <div className={`rounded-2xl border p-5 sm:p-6 ${varianceCount ? "border-amber-300 bg-amber-50/70" : "border-border bg-card"}`}>
-                <p className="text-[10px] font-bold uppercase tracking-[.17em] text-muted-foreground">Perlu audit</p>
-                <p className={`mt-2 font-mono text-4xl font-semibold tracking-tight ${varianceCount ? "text-amber-800" : "text-foreground"}`} data-testid="text-stock-variance-count">{metric(varianceCount)}</p>
-                <p className="mt-2 text-xs text-muted-foreground">Variansi stok pada interval.</p>
-              </div>
-            </section>
+            {/* KETIGA KARTU RINGKASAN SUDAH DIHAPUS DARI SINI AGAR HEMAT TEMPAT */}
 
             <section className="mb-6 overflow-hidden rounded-2xl border border-border bg-card shadow-sm" aria-label="Penjualan otomatis per kunjungan">
               <div className="flex flex-wrap items-end justify-between gap-3 border-b border-border px-4 py-4 sm:px-6">
