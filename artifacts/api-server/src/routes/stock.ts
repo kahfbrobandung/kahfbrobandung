@@ -102,7 +102,11 @@ router.delete("/stock-entries/:id", async (req, res): Promise<void> => {
       .where(eq(stockEntriesTable.id, parsed.data.id))
       .limit(1);
     if (!entry) return { kind: "missing" as const };
-    if (entry.sourceType !== "manual") return { kind: "managed" as const };
+    
+    // PERUBAHAN 1: Izinkan hapus untuk "manual" dan "adjustment"
+    if (entry.sourceType !== "manual" && entry.sourceType !== "adjustment") {
+      return { kind: "managed" as const };
+    }
 
     await tx.delete(stockEntriesTable).where(eq(stockEntriesTable.id, entry.id));
     await reconcileStockLedger(tx, entry.store, entry.barcode);
@@ -246,15 +250,23 @@ router.post("/stock-entries", async (req, res) => {
 
     // 2. Transaksi Database dengan Try-Catch
     const result = await db.transaction(async (tx) => {
+      
+      // PERUBAHAN 2: Logika penentuan minus/plus yang lebih aman
+      const isKoreksiMinus = parsed.data.transaction.includes("-");
+      
       const [created] = await tx
         .insert(stockEntriesTable)
         .values({
           ...parsed.data,
-          quantity: parsed.data.transaction === "Koreksi Stok -" ? -parsed.data.quantity : parsed.data.quantity,
-          displayQuantity: parsed.data.transaction === "Koreksi Stok -" ? -parsed.data.displayQuantity : parsed.data.displayQuantity,
-          secondaryDisplayQuantity: parsed.data.transaction === "Koreksi Stok -" ? -parsed.data.secondaryDisplayQuantity : parsed.data.secondaryDisplayQuantity,
-          warehouseQuantity: parsed.data.transaction === "Koreksi Stok -" ? -parsed.data.warehouseQuantity : parsed.data.warehouseQuantity,
-          sourceType: "manual",
+          // Gunakan Math.abs agar angka selalu positif dulu, lalu beri minus jika transaksinya "Koreksi -"
+          quantity: isKoreksiMinus ? -Math.abs(parsed.data.quantity) : Math.abs(parsed.data.quantity),
+          displayQuantity: isKoreksiMinus ? -Math.abs(parsed.data.displayQuantity) : Math.abs(parsed.data.displayQuantity),
+          secondaryDisplayQuantity: isKoreksiMinus ? -Math.abs(parsed.data.secondaryDisplayQuantity) : Math.abs(parsed.data.secondaryDisplayQuantity),
+          warehouseQuantity: isKoreksiMinus ? -Math.abs(parsed.data.warehouseQuantity) : Math.abs(parsed.data.warehouseQuantity),
+          
+          // PERUBAHAN 3: Baca dari frontend. Kalau frontend tidak kirim, baru default ke "manual"
+          sourceType: parsed.data.sourceType ?? "manual", 
+          
           sourceId: null,
           occurredAt: new Date(),
           syncStatus: "pending",
@@ -318,7 +330,9 @@ router.post("/stock-entries/:id/retry-sync", async (req, res) => {
     res.status(404).json({ error: "Data stok tidak ditemukan." });
     return;
   }
-  if (entry.sourceType !== "manual") {
+  
+  // PERUBAHAN 4: Izinkan retry sync untuk adjustment juga
+  if (entry.sourceType !== "manual" && entry.sourceType !== "adjustment") {
     res.status(409).json({ error: "Transaksi ini tidak disinkronkan dari input manual." });
     return;
   }
