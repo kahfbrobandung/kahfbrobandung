@@ -6,7 +6,6 @@ import HomePage from '@/pages/Home';
 import OperationsPage from '@/pages/Operations';
 import DailySalesReport from '@/pages/DailySalesReport';
 import { Route, Switch, Router as WouterRouter } from 'wouter';
-// INI BAGIAN YANG DIPERBAIKI (IMPORT DARI use-hash-location)
 import { useHashLocation } from 'wouter/use-hash-location';
 
 const queryClient = new QueryClient({
