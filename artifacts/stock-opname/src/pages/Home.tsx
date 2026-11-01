@@ -65,6 +65,7 @@ export default function Home() {
   const totalStock = Number(displayQuantity || 0) + Number(secondaryDisplayQuantity || 0) + Number(warehouseQuantity || 0);
   const isNegativeMovement = transaction === 'Penjualan' || transaction === 'Koreksi Stok -';
   const isPhysicalCorrection = transaction === 'Koreksi Stok +' || transaction === 'Koreksi Stok -';
+  
   const { data: health } = useHealthCheck({
     query: { queryKey: getHealthCheckQueryKey(), refetchInterval: 30_000 },
   });
@@ -174,6 +175,10 @@ export default function Home() {
 
   const getPayload = () => {
     const product = products.find(p => p.barcode === selectedBarcode);
+    
+    // TAMBAHAN LOGIKA: Cek apakah ini transaksi koreksi/temuan
+    const isAdjustment = transaction === 'Koreksi Stok +' || transaction === 'Koreksi Stok -';
+
     return {
       clientId: globalThis.crypto.randomUUID(),
       store: activeStore,
@@ -184,6 +189,8 @@ export default function Home() {
       displayQuantity: Number(displayQuantity || 0),
       secondaryDisplayQuantity: Number(secondaryDisplayQuantity || 0),
       warehouseQuantity: Number(warehouseQuantity || 0),
+      // Kirim tipe adjustment ke backend jika ini koreksi
+      ...(isAdjustment ? { sourceType: 'adjustment' as const } : {}),
     };
   };
 
@@ -571,6 +578,10 @@ export default function Home() {
                 const movementQuantity = entry.transaction.trim().toLocaleLowerCase('id-ID') === 'penjualan'
                   ? -entry.quantity
                   : entry.quantity;
+                
+                // PERUBAHAN: Izinkan hapus untuk manual dan adjustment
+                const canDelete = entry.sourceType === 'manual' || entry.sourceType === 'adjustment';
+
                 return (
                   <div key={entry.id} className="rounded-xl border border-border p-3">
                     <div className="flex items-start justify-between gap-3">
@@ -591,7 +602,7 @@ export default function Home() {
                           <SyncIcon size={12} />
                           {syncMeta.label}
                         </span>
-                        {entry.sourceType === 'manual' ? (
+                        {canDelete ? (
                           <button
                             type="button"
                             onClick={() => deleteEntry(entry)}
