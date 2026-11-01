@@ -6,15 +6,12 @@ import { ProductManager } from '@/components/ProductManager';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { useToast } from '@/hooks/use-toast';
 import {
-  AlertTriangle,
   Box,
   CheckCircle2,
   Cloud,
-  Clock3,
   PackageSearch,
   QrCode,
   RefreshCw,
-  RotateCcw,
   Send,
   Trash2,
 } from 'lucide-react';
@@ -33,7 +30,6 @@ import {
   useDeleteStockEntry,
   useListStockBalances,
   useListStockEntries,
-  useRetryStockEntrySync,
   type StockBalance,
   type StockEntry,
 } from '@workspace/api-client-react';
@@ -94,32 +90,6 @@ export default function Home() {
     },
   );
 
-  const retryMutation = useRetryStockEntrySync({
-    mutation: {
-      onSuccess: (entry) => {
-        queryClient.invalidateQueries({ queryKey: getListStockEntriesQueryKey() });
-        queryClient.invalidateQueries({ queryKey: getListStockBalancesQueryKey() });
-        queryClient.invalidateQueries({ queryKey: getGetSalesMonitorQueryKey() });
-        queryClient.invalidateQueries({ queryKey: getGetSalesActivityQueryKey() });
-        toast({
-          title: entry.syncStatus === 'synced' ? 'Berhasil Sinkron' : 'Belum Tersinkron',
-          description:
-            entry.syncStatus === 'synced'
-              ? 'Data berhasil dikirim ulang ke Google Sheets.'
-              : 'Server tetap menyimpan data, tetapi spreadsheet belum menerima data.',
-          variant: entry.syncStatus === 'synced' ? 'default' : 'destructive',
-        });
-      },
-      onError: (err: any) => {
-        toast({
-          title: 'Gagal Sinkron',
-          description: err.message || 'Data tetap aman di server dan dapat dicoba lagi.',
-          variant: 'destructive',
-        });
-      },
-    },
-  });
-
   const deleteEntryMutation = useDeleteStockEntry();
   const deleteEntry = (entry: StockEntry) => {
     if (!window.confirm(`Hapus catatan ${entry.transaction} ${entry.product} (${entry.quantity} unit)? Saldo akan dihitung ulang.`)) return;
@@ -141,24 +111,19 @@ export default function Home() {
 
   const submitMutation = useCreateStockEntry({
     mutation: {
-      onSuccess: (entry) => {
+      onSuccess: () => {
         queryClient.invalidateQueries({ queryKey: getListStockEntriesQueryKey() });
         queryClient.invalidateQueries({ queryKey: getListStockBalancesQueryKey() });
         queryClient.invalidateQueries({ queryKey: getGetSalesMonitorQueryKey() });
         queryClient.invalidateQueries({ queryKey: getGetSalesActivityQueryKey() });
         queryClient.invalidateQueries({ queryKey: getListStoresQueryKey() });
-        if (entry.syncStatus === 'synced') {
-          toast({
-            title: 'Tersimpan & Tersinkron',
-            description: 'Data sudah tersimpan di server dan Google Sheets.',
-          });
-        } else {
-          toast({
-            title: 'Tersimpan di Server',
-            description: 'Spreadsheet belum menerima data. Anda bisa mencoba sinkron ulang dari daftar transaksi.',
-            variant: 'destructive',
-          });
-        }
+        
+        // Notifikasi selalu sukses karena tidak ada lagi sinkronisasi Spreadsheet
+        toast({
+          title: 'Berhasil Disimpan',
+          description: 'Data stok sudah tersimpan dengan aman di server.',
+        });
+        
         setDisplayQuantity('');
         setSecondaryDisplayQuantity('');
         setWarehouseQuantity('');
@@ -176,7 +141,6 @@ export default function Home() {
   const getPayload = () => {
     const product = products.find(p => p.barcode === selectedBarcode);
     
-    // TAMBAHAN LOGIKA: Cek apakah ini transaksi koreksi/temuan
     const isAdjustment = transaction === 'Koreksi Stok +' || transaction === 'Koreksi Stok -';
 
     return {
@@ -189,7 +153,6 @@ export default function Home() {
       displayQuantity: Number(displayQuantity || 0),
       secondaryDisplayQuantity: Number(secondaryDisplayQuantity || 0),
       warehouseQuantity: Number(warehouseQuantity || 0),
-      // Kirim tipe adjustment ke backend jika ini koreksi
       ...(isAdjustment ? { sourceType: 'adjustment' as const } : {}),
     };
   };
@@ -236,32 +199,12 @@ export default function Home() {
     [selectedBarcode, stockBalances],
   );
 
-  const getSyncMeta = (entry: StockEntry) => {
-    if (entry.syncStatus === 'synced') {
-      return {
-        label: 'Tersinkron',
-        icon: CheckCircle2,
-        className: 'text-emerald-700 bg-emerald-50 border-emerald-200',
-      };
-    }
-    if (entry.syncStatus === 'local') {
-      return {
-        label: 'Di buku stok',
-        icon: CheckCircle2,
-        className: 'text-sky-700 bg-sky-50 border-sky-200',
-      };
-    }
-    if (entry.syncStatus === 'failed') {
-      return {
-        label: 'Perlu dicoba lagi',
-        icon: AlertTriangle,
-        className: 'text-amber-700 bg-amber-50 border-amber-200',
-      };
-    }
+  // Status UI statis karena spreadsheet sudah dihapus
+  const getSyncMeta = () => {
     return {
-      label: 'Menunggu',
-      icon: Clock3,
-      className: 'text-slate-600 bg-slate-50 border-slate-200',
+      label: 'Tersimpan',
+      icon: CheckCircle2,
+      className: 'text-emerald-700 bg-emerald-50 border-emerald-200',
     };
   };
 
@@ -294,7 +237,6 @@ export default function Home() {
 
       <main className="w-full max-w-md px-4 flex-1 flex flex-col gap-6">
         <div className="bg-card border border-border shadow-sm rounded-2xl p-5 relative overflow-hidden">
-          {/* Decorative accent blob */}
           <div className="absolute -top-10 -right-10 w-32 h-32 bg-accent/10 rounded-full blur-2xl pointer-events-none" />
           
           <form onSubmit={handleSubmit} className="flex flex-col gap-5 relative z-10">
@@ -573,13 +515,12 @@ export default function Home() {
                 </div>
               )}
               {recentEntries.map((entry) => {
-                const syncMeta = getSyncMeta(entry);
+                const syncMeta = getSyncMeta();
                 const SyncIcon = syncMeta.icon;
                 const movementQuantity = entry.transaction.trim().toLocaleLowerCase('id-ID') === 'penjualan'
                   ? -entry.quantity
                   : entry.quantity;
                 
-                // PERUBAHAN: Izinkan hapus untuk manual dan adjustment
                 const canDelete = entry.sourceType === 'manual' || entry.sourceType === 'adjustment';
 
                 return (
@@ -620,22 +561,6 @@ export default function Home() {
                         )}
                       </div>
                     </div>
-                    {entry.syncStatus === 'failed' && (
-                      <div className="mt-3 flex items-center justify-between gap-3 border-t border-border pt-3">
-                        <p className="text-xs text-muted-foreground">
-                          Server sudah menyimpan data ini.
-                        </p>
-                        <button
-                          type="button"
-                          onClick={() => retryMutation.mutate({ id: entry.id })}
-                          disabled={retryMutation.isPending}
-                          className="flex shrink-0 items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-60"
-                        >
-                          <RotateCcw size={13} />
-                          Coba Lagi
-                        </button>
-                      </div>
-                    )}
                   </div>
                 );
               })}
