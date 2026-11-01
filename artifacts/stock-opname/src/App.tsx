@@ -6,7 +6,6 @@ import HomePage from '@/pages/Home';
 import OperationsPage from '@/pages/Operations';
 import DailySalesReport from '@/pages/DailySalesReport';
 import { Route, Switch, Router as WouterRouter } from 'wouter';
-import useHashLocation from 'wouter/use-hash-location';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -32,7 +31,7 @@ function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
-        <WouterRouter hook={useHashLocation}>
+        <WouterRouter>
           <Router />
         </WouterRouter>
         <Toaster />
