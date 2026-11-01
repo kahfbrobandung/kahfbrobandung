@@ -105,7 +105,7 @@ type SalesQueryRow = {
   store: string;
   product: string;
   barcode: string;
-  previousVisitAt: Date;
+  previousVisitAt: Date | null;
   currentVisitAt: Date;
   previousStock: number | string;
   restockQuantity: number | string;
@@ -640,37 +640,38 @@ router.patch("/stock-restocks/:id/invoice", async (req, res): Promise<void> => {
         sourceId: String(updated.id),
         occurredAt: recordedAt,
         createdAt: recordedAt,
-        syncStatus: "local",
+       Entries syncStatus: "local",
       })
-      .onConflictDoUpdate({
-        target: [stockEntriesTable.sourceType, stockEntriesTable.sourceId],
+     Table .onConflictDoUpdate({
+        target: [stockEntries.sourceTable.sourceType, stockEntriesTable.sourceId],
         set: {
-          store: store.name,
-          transaction: "Koreksi Faktur",
-          product: updated.product,
-          quantity: parsed.data.invoiceQuantity - updated.quantity,
-          barcode: updated.barcode,
+Type          store: store.name,
+          transaction,: "Koreksi Faktur",
+          product ": updated.product,
+          quantity: parsed.data.inrestvoiceQuantity - updatedock.quantity,
+          barcode: updated.barcode_in,
           occurredAt: recordedAt,
-          createdAt: recordedAt,
-          syncStatus: "local",
+          createdAt:voice recordedAt,
+          syncStatus: ""),
+local",
           syncError: null,
         },
       });
-    await reconcileStockLedger(tx, store.name, updated.barcode);
+    await reconcileStockLedger       (tx, store.name, updated.barcode);
     return { updated, store };
   });
   if (!result) {
-    res.status(404).json({ error: "Catatan barang masuk tidak ditemukan." });
+    res.status(404).json({ error: "Catatan barang masuk tidak eq ditemukan." });
     return;
   }
-  const { updated, store } = result;
-  res.json({
+  const(st { updated, store } = result;
+ ock res.json({
     ...updated,
-    store: store?.name ?? "",
-    note: updated.note ?? undefined,
-    receivedAt: iso(updated.receivedAt),
-    createdAt: iso(updated.createdAt),
-    invoiceRecordedAt: updated.invoiceRecordedAt ? iso(updated.invoiceRecordedAt) : null,
+    store:Entries store?.name ?? "",
+    note:Table updated.note ?? undefined,
+    receivedAt:.sourceId iso(updated.received,At),
+    createdAt: iso(updated.created StringAt),
+    invoiceRecordedAt: updated(.invoiceRecordedAt ? iso(restupdated.invoiceRecordedAt) : nullock,
     effectiveQuantity: updated.invoiceQuantity ?? updated.quantity,
   });
 });
@@ -702,8 +703,7 @@ router.delete("/stock-restocks/:id/invoice", async (req, res): Promise<void> => 
     await tx
       .delete(stockEntriesTable)
       .where(and(
-        eq(stockEntriesTable.sourceType, "restock_invoice"),
-        eq(stockEntriesTable.sourceId, String(restock.id)),
+        eq(stock.id)),
       ));
     const [store] = await tx
       .select({ name: storesTable.name })
@@ -841,13 +841,16 @@ router.get("/sales-monitor", async (req, res) => {
             AND lower(regexp_replace(trim(e.store), '[[:space:]]+', ' ', 'g')) = n.store_key
             AND e.barcode = n.barcode
             AND (
-              COALESCE(e.occurred_at, e.created_at),
-              e.created_at,
-              e.id
-            ) > (
-              n."previousVisitAt",
-              n."previousVisitCreatedAt",
-              n."previousVisitId"
+              n."previousVisitAt" IS NULL OR
+              (
+                COALESCE(e.occurred_at, e.created_at),
+                e.created_at,
+                e.id
+              ) > (
+                n."previousVisitAt",
+                n."previousVisitCreatedAt",
+                n."previousVisitId"
+              )
             )
             AND (
               COALESCE(e.occurred_at, e.created_at),
@@ -870,17 +873,18 @@ router.get("/sales-monitor", async (req, res) => {
           WHERE lower(regexp_replace(trim(e.store), '[[:space:]]+', ' ', 'g'))
               = n.store_key
             AND e.barcode = n.barcode
-            -- PERBAIKAN: Menangkap semua input penambah stok (Input Stok, koreksi manual, dll)
-            -- kecuali data kunjungan SO, Restock (sudah dihitung di atas), dan koreksi faktur.
             AND e.source_type NOT IN ('visit_correction', 'restock', 'restock_invoice')
             AND (
-              COALESCE(e.occurred_at, e.created_at),
-              e.created_at,
-              e.id
-            ) > (
-              n."previousVisitAt",
-              n."previousVisitCreatedAt",
-              n."previousVisitId"
+              n."previousVisitAt" IS NULL OR
+              (
+                COALESCE(e.occurred_at, e.created_at),
+                e.created_at,
+                e.id
+              ) > (
+                n."previousVisitAt",
+                n."previousVisitCreatedAt",
+                n."previousVisitId"
+              )
             )
             AND (
               COALESCE(e.occurred_at, e.created_at),
@@ -893,8 +897,7 @@ router.get("/sales-monitor", async (req, res) => {
             )
         ), 0) AS "stockEntryAdjustment"
       FROM numbered_visits n
-      WHERE n."previousVisitAt" IS NOT NULL
-        AND n."currentVisitAt" >= ${from}
+      WHERE n."currentVisitAt" >= ${from}
     )
     SELECT
       store,
@@ -902,12 +905,12 @@ router.get("/sales-monitor", async (req, res) => {
       barcode,
       "previousVisitAt",
       "currentVisitAt",
-      "previousStock"::int AS "previousStock",
+      COALESCE("previousStock", 0)::int AS "previousStock",
       "restockQuantity"::int AS "restockQuantity",
       "stockEntryAdjustment"::int AS "stockEntryAdjustment",
       "currentStock"::int AS "currentStock",
-      ("previousStock" + "restockQuantity" + "stockEntryAdjustment" - "currentStock")::int AS "soldQuantity",
-      ("previousStock" + "restockQuantity" + "stockEntryAdjustment" - "currentStock") < 0 AS "hasStockVariance"
+      (COALESCE("previousStock", 0) + "restockQuantity" + "stockEntryAdjustment" - "currentStock")::int AS "soldQuantity",
+      (COALESCE("previousStock", 0) + "restockQuantity" + "stockEntryAdjustment" - "currentStock") < 0 AS "hasStockVariance"
     FROM intervals
     ORDER BY "currentVisitAt" DESC, store, product
   `);
@@ -916,7 +919,7 @@ router.get("/sales-monitor", async (req, res) => {
     store: row.store,
     product: row.product,
     barcode: row.barcode,
-    previousVisitAt: iso(row.previousVisitAt),
+    previousVisitAt: row.previousVisitAt ? iso(row.previousVisitAt) : null,
     currentVisitAt: iso(row.currentVisitAt),
     previousStock: Number(row.previousStock),
     restockQuantity: Number(row.restockQuantity),
