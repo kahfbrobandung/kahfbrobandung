@@ -556,6 +556,9 @@ components:
           type: string
           minLength: 1
           maxLength: 100
+        sourceType:
+          type: string
+          enum: [manual, adjustment]
         store:
           type: string
           minLength: 1
@@ -620,7 +623,7 @@ components:
           type: integer
         sourceType:
           type: string
-          enum: [manual, restock, restock_invoice, visit_correction]
+          enum: [manual, restock, restock_invoice, visit_correction, adjustment]
         occurredAt:
           type: string
           format: date-time
@@ -1008,4 +1011,3 @@ components:
           type: string
       required:
         - error
-
