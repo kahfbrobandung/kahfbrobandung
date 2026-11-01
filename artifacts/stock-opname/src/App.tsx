@@ -6,7 +6,7 @@ import HomePage from '@/pages/Home';
 import OperationsPage from '@/pages/Operations';
 import DailySalesReport from '@/pages/DailySalesReport';
 import { Route, Switch, Router as WouterRouter } from 'wouter';
-import { useHashLocation } from 'wouter/use-hash-location';
+import useHashLocation from 'wouter/use-hash-location';
 
 const queryClient = new QueryClient({
   defaultOptions: {
