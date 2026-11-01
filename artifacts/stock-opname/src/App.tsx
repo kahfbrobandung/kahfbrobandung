@@ -6,8 +6,8 @@ import HomePage from '@/pages/Home';
 import OperationsPage from '@/pages/Operations';
 import DailySalesReport from '@/pages/DailySalesReport';
 import { Route, Switch, Router as WouterRouter } from 'wouter';
-// INI IMPORT YANG BENAR UNTUK VERSI WOUTER ANDA
-import useHashLocation from 'wouter/use-hash-location'; 
+// INI BAGIAN YANG DIPERBAIKI (PAKAI KURUNG KURAWAL)
+import { useHashLocation } from 'wouter/use-hash-location';
 
 const queryClient = new QueryClient({
   defaultOptions: {
