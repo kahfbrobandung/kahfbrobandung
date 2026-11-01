@@ -5,7 +5,8 @@ import NotFound from '@/pages/not-found';
 import HomePage from '@/pages/Home';
 import OperationsPage from '@/pages/Operations';
 import DailySalesReport from '@/pages/DailySalesReport';
-import { Route, Switch, Router as WouterRouter } from 'wouter';
+// TAMBAHKAN useHashLocation DARI WOUTER
+import { Route, Switch, Router as WouterRouter, useHashLocation } from 'wouter';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -31,7 +32,8 @@ function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
-        <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, '')}>
+        {/* GUNAKAN hook={useHashLocation} DI SINI */}
+        <WouterRouter hook={useHashLocation}>
           <Router />
         </WouterRouter>
         <Toaster />
