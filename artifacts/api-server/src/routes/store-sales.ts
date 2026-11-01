@@ -101,23 +101,6 @@ async function loadVisit(visitId: number) {
   };
 }
 
-function emptySalesMonitor() {
-  return {
-    summary: {
-      totalSold: 0,
-      totalRestocked: 0,
-      activeStores: 0,
-      trackedSkus: 0,
-      visitComparisons: 0,
-      varianceCount: 0,
-    },
-    dailyTrend: [],
-    stores: [],
-    products: [],
-    calculations: [],
-  };
-}
-
 type SalesQueryRow = {
   store: string;
   product: string;
@@ -814,6 +797,7 @@ router.get("/sales-monitor", async (req, res) => {
   const storeFilter = requestedStoreKey
     ? sql`AND lower(regexp_replace(trim(e.store), '[[:space:]]+', ' ', 'g')) = ${requestedStoreKey}`
     : sql``;
+    
   const result = await db.execute<SalesQueryRow>(sql`
     WITH numbered_visits AS (
       SELECT
@@ -886,7 +870,9 @@ router.get("/sales-monitor", async (req, res) => {
           WHERE lower(regexp_replace(trim(e.store), '[[:space:]]+', ' ', 'g'))
               = n.store_key
             AND e.barcode = n.barcode
-            AND e.source_type = 'manual'
+            -- PERBAIKAN: Menangkap semua input penambah stok (Input Stok, koreksi manual, dll)
+            -- kecuali data kunjungan SO, Restock (sudah dihitung di atas), dan koreksi faktur.
+            AND e.source_type NOT IN ('visit_correction', 'restock', 'restock_invoice')
             AND (
               COALESCE(e.occurred_at, e.created_at),
               e.created_at,
