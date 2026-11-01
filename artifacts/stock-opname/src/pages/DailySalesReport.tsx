@@ -1,30 +1,28 @@
 import { useState } from "react";
 import { Link } from "wouter";
-import { ArrowLeft, BarChart3, Calendar, Store, TrendingUp } from "lucide-react";
-import { useGetDailySales, useGetSalesMonitor } from "@workspace/api-client-react";
+import { ArrowLeft, TrendingUp, PackageMinus } from "lucide-react";
+import { useGetSalesMonitor } from "@workspace/api-client-react";
 import { useStoreName } from "@/hooks/useStoreName";
 
 export default function DailySalesReport() {
   const [storeName] = useStoreName();
   const activeStore = storeName.trim();
+  
+  // Default filter 30 hari terakhir
   const [dateRange, setDateRange] = useState({
-    from: new Date(new Date().setDate(new Date().getDate() - 7)).toISOString().split("T")[0],
+    from: new Date(new Date().setDate(new Date().getDate() - 30)).toISOString().split("T")[0],
     to: new Date().toISOString().split("T")[0],
   });
 
-  // Mengambil data penjualan harian dari API
-  const { data: dailySales, isLoading: salesLoading } = useGetDailySales({
-    from: dateRange.from,
-    to: dateRange.to,
-    store: activeStore || undefined,
-  });
-
-  // Mengambil data monitor penjualan (agregat)
+  // Ambil data perhitungan otomatis dari Kunjungan SO
   const { data: salesMonitor, isLoading: monitorLoading } = useGetSalesMonitor({
     from: dateRange.from,
     to: dateRange.to,
     store: activeStore || undefined,
   });
+
+  // Filter hanya barang yang benar-benar terjual (di atas 0)
+  const soldItems = salesMonitor?.calculations?.filter((item) => item.soldQuantity > 0) || [];
 
   return (
     <div className="min-h-[100dvh] w-full bg-background flex flex-col items-center pb-12">
@@ -66,7 +64,9 @@ export default function DailySalesReport() {
         </div>
 
         {/* Ringkasan Penjualan */}
-        {salesMonitor && (
+        {monitorLoading ? (
+           <div className="h-32 animate-pulse rounded-2xl bg-muted" />
+        ) : salesMonitor ? (
           <div className="bg-card border border-border shadow-sm rounded-2xl p-5">
             <h3 className="font-serif text-lg font-bold mb-4 flex items-center gap-2">
               <TrendingUp size={18} className="text-primary" /> Ringkasan
@@ -80,44 +80,38 @@ export default function DailySalesReport() {
                 <p className="text-xs text-muted-foreground">Total Restock</p>
                 <p className="text-2xl font-bold text-primary">{salesMonitor.summary.totalRestocked}</p>
               </div>
-              <div className="bg-primary/5 rounded-xl p-3 border border-primary/10">
-                <p className="text-xs text-muted-foreground">Toko Aktif</p>
-                <p className="text-2xl font-bold text-primary">{salesMonitor.summary.activeStores}</p>
-              </div>
-              <div className="bg-primary/5 rounded-xl p-3 border border-primary/10">
-                <p className="text-xs text-muted-foreground">SKU Terpantau</p>
-                <p className="text-2xl font-bold text-primary">{salesMonitor.summary.trackedSkus}</p>
-              </div>
             </div>
           </div>
-        )}
+        ) : null}
 
-        {/* Daftar Transaksi Penjualan */}
+        {/* Daftar Barang Terjual */}
         <div className="bg-card border border-border shadow-sm rounded-2xl p-5">
           <h3 className="font-serif text-lg font-bold mb-4 flex items-center gap-2">
-            <BarChart3 size={18} className="text-primary" /> Transaksi Harian
+            <PackageMinus size={18} className="text-primary" /> Daftar Barang Terjual
           </h3>
           
-          {salesLoading ? (
+          {monitorLoading ? (
             <div className="space-y-3">
               <div className="h-14 animate-pulse rounded-xl bg-muted" />
               <div className="h-14 animate-pulse rounded-xl bg-muted" />
             </div>
-          ) : !dailySales || dailySales.length === 0 ? (
+          ) : soldItems.length === 0 ? (
             <div className="text-center py-8 text-muted-foreground border border-dashed rounded-xl">
-              Belum ada transaksi penjualan pada periode ini.
+              Belum ada perhitungan penjualan pada periode ini. <br/>
+              <span className="text-xs">(Pastikan ada minimal 2x Kunjungan SO untuk produk yang sama di toko ini).</span>
             </div>
           ) : (
             <ul className="space-y-3">
-              {dailySales.map((sale) => (
-                <li key={sale.id} className="flex items-center justify-between gap-3 border-b border-border pb-3 last:border-0 last:pb-0">
+              {soldItems.map((item, index) => (
+                <li key={`${item.barcode}-${index}`} className="flex items-center justify-between gap-3 border-b border-border pb-3 last:border-0 last:pb-0">
                   <div>
-                    <p className="text-sm font-semibold">{sale.product}</p>
-                    <p className="text-xs text-muted-foreground">
-                      {new Date(sale.createdAt).toLocaleString("id-ID", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}
+                    <p className="text-sm font-semibold">{item.product}</p>
+                    <p className="text-xs text-muted-foreground font-mono">{item.barcode}</p>
+                    <p className="text-[11px] text-muted-foreground mt-0.5">
+                      SO Terakhir: {new Date(item.currentVisitAt).toLocaleDateString("id-ID", { day: "2-digit", month: "short", year: "numeric" })}
                     </p>
                   </div>
-                  <span className="font-mono font-bold text-primary">-{sale.quantity}</span>
+                  <span className="font-mono font-bold text-destructive text-lg">-{item.soldQuantity}</span>
                 </li>
               ))}
             </ul>
