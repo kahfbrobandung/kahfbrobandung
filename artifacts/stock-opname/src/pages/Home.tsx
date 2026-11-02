@@ -56,6 +56,10 @@ export default function Home() {
   const [secondaryDisplayQuantity, setSecondaryDisplayQuantity] = useState<number | ''>('');
   const [warehouseQuantity, setWarehouseQuantity] = useState<number | ''>('');
   const [isScannerOpen, setIsScannerOpen] = useState(false);
+  
+  // STATE BARU UNTUK PAGINATION (Muat Lebih Banyak)
+  const [historyLimit, setHistoryLimit] = useState(5);
+
   const queryClient = useQueryClient();
   const activeStore = storeName.trim();
   const totalStock = Number(displayQuantity || 0) + Number(secondaryDisplayQuantity || 0) + Number(warehouseQuantity || 0);
@@ -70,10 +74,11 @@ export default function Home() {
   });
 
   const { data: recentEntries = [], isLoading: isRecentLoading, isError: entriesError, refetch: refetchEntries } = useListStockEntries(
-    { store: activeStore, limit: 5 },
+    // MENGGUNAKAN historyLimit DINAMIS
+    { store: activeStore, limit: historyLimit },
     {
       query: {
-        queryKey: getListStockEntriesQueryKey({ store: activeStore, limit: 5 }),
+        queryKey: getListStockEntriesQueryKey({ store: activeStore, limit: historyLimit }),
         refetchInterval: 5000,
         enabled: Boolean(activeStore),
       },
@@ -118,7 +123,6 @@ export default function Home() {
         queryClient.invalidateQueries({ queryKey: getGetSalesActivityQueryKey() });
         queryClient.invalidateQueries({ queryKey: getListStoresQueryKey() });
         
-        // Notifikasi selalu sukses karena tidak ada lagi sinkronisasi Spreadsheet
         toast({
           title: 'Berhasil Disimpan',
           description: 'Data stok sudah tersimpan dengan aman di server.',
@@ -199,7 +203,6 @@ export default function Home() {
     [selectedBarcode, stockBalances],
   );
 
-  // Status UI statis karena spreadsheet sudah dihapus
   const getSyncMeta = () => {
     return {
       label: 'Tersimpan',
@@ -564,6 +567,18 @@ export default function Home() {
                   </div>
                 );
               })}
+              
+              {/* TOMBOL MUAT LEBIH BANYAK */}
+              {recentEntries.length >= historyLimit && (
+                <button
+                  type="button"
+                  onClick={() => setHistoryLimit((prev) => prev + 5)}
+                  className="w-full mt-2 py-2.5 text-sm font-semibold text-primary border border-primary/30 rounded-xl hover:bg-primary/5 transition-colors"
+                >
+                  Muat Lebih Banyak
+                </button>
+              )}
+
             </div>
           )}
         </section>
