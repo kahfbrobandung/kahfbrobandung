@@ -26,7 +26,7 @@ import { useStoreName } from "@/hooks/useStoreName";
 import { useToast } from "@/hooks/use-toast";
 import { BarcodeScanner } from "@/components/BarcodeScanner";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
-import { ArrowLeft, Boxes, Camera, ClipboardCheck, PackagePlus, Plus, Trash2 } from "lucide-react";
+import { ArrowLeft, Boxes, Camera, ClipboardCheck, PackagePlus, Plus, Trash2, Search } from "lucide-react";
 
 const integerText = z
   .string()
@@ -70,6 +70,8 @@ type LineFormValues = z.infer<typeof lineFormSchema>;
 type VisitFormValues = z.infer<typeof visitFormSchema>;
 type RestockFormValues = z.infer<typeof restockFormSchema>;
 
+type DraftQty = { display: string; secondary: string; warehouse: string };
+
 function localDateTime() {
   const now = new Date();
   return new Date(now.getTime() - now.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
@@ -95,7 +97,13 @@ export default function Operations() {
   const [scannerTarget, setScannerTarget] = useState<"visit" | "restock" | null>(null);
   const [visitProductSelection, setVisitProductSelection] = useState("");
   const [restockProductSelection, setRestockProductSelection] = useState("");
-  const [lines, setLines] = useState<StocktakeLineInput[]>([]);
+  
+  // State for direct table input
+  const [draftQuantities, setDraftQuantities] = useState<Record<string, DraftQty>>({});
+  const [visitSearch, setVisitSearch] = useState("");
+  const [showNewProductForm, setShowNewProductForm] = useState(false);
+  const [customProducts, setCustomProducts] = useState<{barcode: string, name: string}[]>([]);
+
   const [restockSearch, setRestockSearch] = useState("");
   
   // STATE UNTUK PAGINATION
@@ -131,7 +139,8 @@ export default function Operations() {
     },
   });
 
-  const productOptions = useMemo(() => {
+  // Gabungkan produk dari DB, riwayat, dan input manual baru
+  const allProductOptions = useMemo(() => {
     const byBarcode = new Map<string, { barcode: string; name: string }>();
     for (const visit of visitHistoryQuery.data ?? []) {
       for (const line of visit.lines ?? []) {
@@ -148,8 +157,16 @@ export default function Operations() {
     for (const product of products) {
       byBarcode.set(product.barcode, { barcode: product.barcode, name: product.name });
     }
+    for (const cp of customProducts) {
+      byBarcode.set(cp.barcode, cp);
+    }
     return [...byBarcode.values()].sort((a, b) => a.name.localeCompare(b.name, "id"));
-  }, [products, restockHistoryQuery.data, visitHistoryQuery.data]);
+  }, [products, restockHistoryQuery.data, visitHistoryQuery.data, customProducts]);
+
+  const filteredVisitProducts = useMemo(() => {
+    const q = visitSearch.toLowerCase();
+    return allProductOptions.filter(p => p.name.toLowerCase().includes(q) || p.barcode.includes(q));
+  }, [allProductOptions, visitSearch]);
 
   const visibleRestocks = useMemo(() => {
     const query = restockSearch.trim().toLocaleLowerCase("id-ID");
@@ -171,10 +188,12 @@ export default function Operations() {
       warehouseQuantity: "",
     },
   });
+  
   const visitForm = useForm<VisitFormValues>({
     resolver: zodResolver(visitFormSchema),
     defaultValues: { visitedAt: localDateTime() },
   });
+
   const restockForm = useForm<RestockFormValues>({
     resolver: zodResolver(restockFormSchema),
     defaultValues: { barcode: "", product: "", quantity: "", receivedAt: localDateTime(), note: "" },
@@ -182,7 +201,7 @@ export default function Operations() {
 
   const setScannedBarcode = (target: "visit" | "restock", scannedValue: string) => {
     const barcode = scannedValue.trim();
-    const knownProduct = productOptions.find((product) => product.barcode === barcode);
+    const knownProduct = allProductOptions.find((product) => product.barcode === barcode);
     if (target === "visit") {
       setVisitProductSelection(knownProduct?.barcode ?? "");
       lineForm.setValue("barcode", barcode, { shouldDirty: true, shouldValidate: true });
@@ -216,38 +235,39 @@ export default function Operations() {
     queryClient.invalidateQueries({ queryKey: getGetSalesActivityQueryKey() });
   };
 
-  const onAddLine = lineForm.handleSubmit((values) => {
-    if (!activeStore) {
-      toast({
-        title: "Pilih toko terlebih dahulu",
-        description: "Satu kunjungan hanya boleh berisi stok dari satu toko.",
-        variant: "destructive",
-      });
-      return;
-    }
-    if (lines.some((line) => line.barcode === values.barcode.trim())) {
-      lineForm.setError("barcode", { message: "Barcode ini sudah ditambahkan ke kunjungan." });
-      return;
-    }
-    setLines((current) => [
-      ...current,
-      {
-        product: values.product.trim(),
-        barcode: values.barcode.trim(),
-        displayQuantity: Number(values.displayQuantity || 0),
-        secondaryDisplayQuantity: Number(values.secondaryDisplayQuantity || 0),
-        warehouseQuantity: Number(values.warehouseQuantity || 0),
-      },
-    ]);
-    setVisitProductSelection("");
-    visitForm.clearErrors("root");
-    lineForm.reset({
-      barcode: "",
-      product: "",
-      displayQuantity: "",
-      secondaryDisplayQuantity: "",
-      warehouseQuantity: "",
+  // Fungsi untuk update angka langsung dari tabel
+  const handleDraftChange = (barcode: string, field: keyof DraftQty, value: string) => {
+    if (value !== "" && !/^\d+$/.test(value)) return; // cuma boleh angka
+    setDraftQuantities(prev => {
+      const existing = prev[barcode] || { display: "", secondary: "", warehouse: "" };
+      return { ...prev, [barcode]: { ...existing, [field]: value } };
     });
+  };
+
+  // Fungsi tambah produk baru via form manual
+  const onAddNewProduct = lineForm.handleSubmit((values) => {
+    const barcode = values.barcode.trim();
+    const productName = values.product.trim();
+    
+    // Tambah ke list custom
+    if (!allProductOptions.some(p => p.barcode === barcode)) {
+      setCustomProducts(prev => [...prev, { barcode, name: productName }]);
+    }
+    
+    // Langsung isi draft quantity-nya
+    setDraftQuantities(prev => ({
+      ...prev,
+      [barcode]: {
+        display: values.displayQuantity,
+        secondary: values.secondaryDisplayQuantity,
+        warehouse: values.warehouseQuantity,
+      }
+    }));
+
+    setVisitProductSelection("");
+    lineForm.reset();
+    setShowNewProductForm(false); // Sembunyikan form lagi
+    toast({ title: "Produk ditambahkan", description: `${productName} siap diisi angkanya.` });
   });
 
   const createVisit = useCreateStockVisit();
@@ -264,10 +284,28 @@ export default function Operations() {
       });
       return;
     }
+
+    // Convert draftQuantities ke format lines
+    const lines: StocktakeLineInput[] = [];
+    for (const [barcode, qty] of Object.entries(draftQuantities)) {
+      if (qty.display === "" && qty.secondary === "" && qty.warehouse === "") continue;
+      const product = allProductOptions.find(p => p.barcode === barcode);
+      if (product) {
+        lines.push({
+          barcode,
+          product: product.name,
+          displayQuantity: Number(qty.display || 0),
+          secondaryDisplayQuantity: Number(qty.secondary || 0),
+          warehouseQuantity: Number(qty.warehouse || 0),
+        });
+      }
+    }
+
     if (lines.length === 0) {
-      visitForm.setError("root", { message: "Tambahkan minimal satu SKU ke kunjungan ini." });
+      visitForm.setError("root", { message: "Isi minimal satu angka pada daftar produk." });
       return;
     }
+
     visitClientId.current ??= crypto.randomUUID();
     createVisit.mutate(
       {
@@ -281,13 +319,12 @@ export default function Operations() {
       {
         onSuccess: (visit) => {
           visitClientId.current = null;
-          setLines([]);
-          setVisitProductSelection("");
+          setDraftQuantities({}); // Reset tabel
           visitForm.reset({ visitedAt: localDateTime() });
           refreshAffectedData();
           toast({
             title: "Kunjungan tersimpan",
-            description: `${visit.lines?.length ?? lines.length} SKU tersimpan untuk ${visit.store}. Penjualan dihitung setelah SKU memiliki kunjungan pembanding.`,
+            description: `${visit.lines?.length ?? lines.length} SKU tersimpan untuk ${visit.store}.`,
           });
         },
         onError: (error) => {
@@ -376,9 +413,6 @@ export default function Operations() {
               <ArrowLeft className="h-4 w-4" /> Input stok
             </Link>
             <h1 className="font-serif text-3xl font-bold tracking-tight">Kunjungan & barang masuk</h1>
-            <p className="mt-1 max-w-xl text-sm text-muted-foreground">
-              Kunjungan mencatat jumlah fisik sebagai koreksi selisih di buku stok yang sama. Hitungan fisik tidak ditambahkan ulang sebagai stok baru.
-            </p>
           </div>
           
           <button
@@ -408,9 +442,6 @@ export default function Operations() {
           <datalist id="known-stores">
             {(storesQuery.data ?? []).map((store) => <option key={store.name} value={store.name} />)}
           </datalist>
-          <p className="mt-2 text-xs text-muted-foreground">
-            Catatan setiap toko tetap terpisah. Pilih atau ketik nama toko yang sama seperti kunjungan sebelumnya.
-          </p>
         </section>
 
         <div className="mb-5 grid grid-cols-2 gap-2 rounded-xl bg-muted p-1" role="tablist" aria-label="Jenis pencatatan">
@@ -419,7 +450,7 @@ export default function Operations() {
             role="tab"
             aria-selected={activeTab === "visit"}
             onClick={() => setActiveTab("visit")}
-            className={`inline-flex h-10 items-center justify-center gap-2 rounded-lg px-3 text-sm font-semibold transition ${activeTab === "visit" ? "bg-card text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+            className={`inline-flex h-10 items-center justify-center gap-2 rounded-lg px-3 text-sm font-semibold transition ${activeTab === "visit" ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
             data-testid="tab-stock-visit"
           >
             <ClipboardCheck className="h-4 w-4" /> Kunjungan SO
@@ -429,7 +460,7 @@ export default function Operations() {
             role="tab"
             aria-selected={activeTab === "restock"}
             onClick={() => setActiveTab("restock")}
-            className={`inline-flex h-10 items-center justify-center gap-2 rounded-lg px-3 text-sm font-semibold transition ${activeTab === "restock" ? "bg-card text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+            className={`inline-flex h-10 items-center justify-center gap-2 rounded-lg px-3 text-sm font-semibold transition ${activeTab === "restock" ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
             data-testid="tab-stock-restock"
           >
             <PackagePlus className="h-4 w-4" /> Barang masuk
@@ -439,213 +470,169 @@ export default function Operations() {
         {activeTab === "visit" ? (
           <div className="grid gap-5 lg:grid-cols-[1fr_0.9fr]">
             <section className="rounded-2xl border border-border bg-card p-5">
-              <h2 className="font-serif text-xl font-bold">Catat satu kunjungan</h2>
-              <p className="mb-5 mt-1 text-sm text-muted-foreground">Tambahkan seluruh SKU yang dihitung pada kunjungan ke toko ini.</p>
+              
+              <div className="mb-4 flex items-center justify-between">
+                <div>
+                  <h2 className="font-serif text-xl font-bold">Hitung Fisik</h2>
+                  <p className="mt-1 text-sm text-muted-foreground">Isi angka langsung di tabel. Kosongkan jika 0.</p>
+                </div>
+                <button 
+                  type="button"
+                  onClick={() => setShowNewProductForm(!showNewProductForm)}
+                  className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-primary/30 bg-primary/5 px-3 text-xs font-semibold text-primary"
+                >
+                  <Plus className="h-4 w-4" /> Produk Baru
+                </button>
+              </div>
 
-              <Form {...lineForm}>
-                <form onSubmit={onAddLine} className="space-y-4 border-b border-border pb-5">
-                  <div>
-                    <label htmlFor="visit-product-select" className="mb-1.5 block text-sm font-medium">Pilih produk tersimpan (tanpa scan)</label>
-                    <select
-                      id="visit-product-select"
-                      value={visitProductSelection}
-                      onChange={(event) => {
-                        const product = productOptions.find((item) => item.barcode === event.target.value);
-                        setVisitProductSelection(product?.barcode ?? "");
-                        if (product) {
-                          lineForm.setValue("barcode", product.barcode, { shouldDirty: true, shouldValidate: true });
-                          lineForm.setValue("product", product.name, { shouldDirty: true, shouldValidate: true });
-                        }
-                      }}
-                      disabled={productOptions.length === 0}
-                      className="h-11 w-full rounded-lg border border-input bg-background px-3 text-sm disabled:opacity-60"
-                      data-testid="select-visit-product"
-                    >
-                      <option value="">Pilih produk dari daftar</option>
-                      {productOptions.map((product) => (
-                        <option key={product.barcode} value={product.barcode}>{product.name} · {product.barcode}</option>
-                      ))}
-                    </select>
-                    <p className="mt-1.5 text-xs text-muted-foreground">
-                      Atau isi nama dan barcode/kode produk secara manual di bawah. Pemindai hanya pilihan.
-                    </p>
-                  </div>
-                  <FormField
-                    control={lineForm.control}
-                    name="barcode"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Barcode / kode produk</FormLabel>
-                        <FormControl>
-                          <div className="flex gap-2">
-                            <input
-                              {...field}
-                              list="visit-product-barcodes"
-                              onKeyDown={(event) => {
-                                if (event.key === "Enter") event.preventDefault();
-                              }}
-                              onChange={(event) => {
-                                field.onChange(event);
-                                const match = productOptions.find((product) => product.barcode === event.target.value.trim());
-                                setVisitProductSelection(match?.barcode ?? "");
-                                lineForm.setValue("product", match?.name ?? "", { shouldDirty: true, shouldValidate: false });
-                              }}
-                              placeholder="Masukkan kode atau scan"
-                              className="h-11 min-w-0 flex-1 rounded-lg border border-input bg-background px-3 text-sm"
-                              data-testid="input-visit-barcode"
-                            />
-                            <button
-                              type="button"
-                              onClick={() => setScannerTarget("visit")}
-                              className="inline-flex h-11 shrink-0 items-center gap-2 rounded-lg border border-border bg-card px-3 text-sm font-semibold hover:bg-muted"
-                              aria-label="Scan barcode kunjungan"
-                              data-testid="button-scan-visit-barcode"
-                            >
-                              <Camera className="h-4 w-4" /> Scan
-                            </button>
-                          </div>
-                        </FormControl>
-                        <datalist id="visit-product-barcodes">
-                          {productOptions.map((product) => <option key={product.barcode} value={product.barcode} label={product.name} />)}
-                        </datalist>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                  <FormField
-                    control={lineForm.control}
-                    name="product"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Nama produk</FormLabel>
-                        <FormControl>
-                          <input
-                            {...field}
-                            onChange={(event) => {
-                              setVisitProductSelection("");
-                              field.onChange(event);
-                            }}
-                            placeholder="Nama produk"
-                            className="h-11 w-full rounded-lg border border-input bg-background px-3 text-sm"
-                            data-testid="input-visit-product-name"
-                          />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                  <div className="grid grid-cols-3 gap-3">
-                    {([
-                      ["displayQuantity", "Display"],
-                      ["secondaryDisplayQuantity", "Secondary"],
-                      ["warehouseQuantity", "Gudang"],
-                    ] as const).map(([name, label]) => (
-                      <FormField
-                        key={name}
-                        control={lineForm.control}
-                        name={name}
-                        render={({ field }) => (
+              {/* FORM PRODUK BARU (Sembunyi default) */}
+              {showNewProductForm && (
+                <div className="mb-5 rounded-xl border border-border bg-muted/30 p-4">
+                  <Form {...lineForm}>
+                    <form onSubmit={onAddNewProduct} className="space-y-3">
+                       <FormField control={lineForm.control} name="barcode" render={({ field }) => (
                           <FormItem>
-                            <FormLabel>{label}</FormLabel>
+                            <FormLabel className="text-xs">Barcode / Kode</FormLabel>
                             <FormControl>
-                              <input
-                                {...field}
-                                type="number"
-                                min="0"
-                                step="1"
-                                inputMode="numeric"
-                                placeholder="0"
-                                className="h-11 w-full rounded-lg border border-input bg-background px-3 text-center text-base font-semibold"
-                                data-testid={`input-visit-${name}`}
-                              />
+                              <div className="flex gap-2">
+                                <input {...field} placeholder="Scan / ketik kode" className="h-9 min-w-0 flex-1 rounded-md border border-input bg-background px-2 text-sm" />
+                                <button type="button" onClick={() => setScannerTarget("visit")} className="inline-flex h-9 items-center gap-1 rounded-md border border-border bg-card px-2 text-xs font-semibold">
+                                  <Camera className="h-3.5 w-3.5" /> Scan
+                                </button>
+                              </div>
                             </FormControl>
-                            {name === "displayQuantity" && <FormMessage />}
+                            <FormMessage />
                           </FormItem>
-                        )}
-                      />
-                    ))}
-                  </div>
-                  <button type="submit" className="inline-flex h-10 items-center gap-2 rounded-lg bg-secondary px-4 text-sm font-semibold text-secondary-foreground hover:opacity-90" data-testid="button-add-visit-line">
-                    <Plus className="h-4 w-4" /> Tambahkan SKU
-                  </button>
-                </form>
-              </Form>
-
-              {productOptions.length === 0 && (
-                <p className="mt-4 rounded-lg border border-dashed border-border p-3 text-sm text-muted-foreground" data-testid="status-no-products">
-                  Belum ada produk tersimpan. Masukkan nama dan barcode/kode produk sendiri; tidak perlu scan.
-                </p>
+                        )} />
+                        <FormField control={lineForm.control} name="product" render={({ field }) => (
+                          <FormItem>
+                            <FormLabel className="text-xs">Nama Produk</FormLabel>
+                            <FormControl>
+                              <input {...field} placeholder="Nama Produk" className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm" />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )} />
+                        <div className="grid grid-cols-3 gap-2">
+                          {(["displayQuantity", "secondaryDisplayQuantity", "warehouseQuantity"] as const).map((name, i) => (
+                            <FormField key={name} control={lineForm.control} name={name} render={({ field }) => (
+                              <FormItem>
+                                <FormLabel className="text-[10px] uppercase">{["Display", "Secondary", "Gudang"][i]}</FormLabel>
+                                <FormControl>
+                                  <input {...field} type="number" inputMode="numeric" placeholder="0" className="h-9 w-full rounded-md border border-input bg-background text-center text-sm font-semibold" />
+                                </FormControl>
+                              </FormItem>
+                            )} />
+                          ))}
+                        </div>
+                        <div className="flex gap-2 pt-1">
+                          <button type="submit" className="flex-1 rounded-md bg-primary py-1.5 text-xs font-semibold text-primary-foreground">Tambahkan</button>
+                          <button type="button" onClick={() => setShowNewProductForm(false)} className="flex-1 rounded-md border border-border bg-card py-1.5 text-xs font-semibold">Batal</button>
+                        </div>
+                    </form>
+                  </Form>
+                </div>
               )}
 
-              <div className="mt-5">
-                <div className="mb-3 flex items-center justify-between">
-                  <h3 className="text-sm font-semibold">SKU dalam kunjungan</h3>
-                  <span className="rounded-full bg-muted px-2.5 py-1 text-xs font-semibold" data-testid="text-visit-line-count">{lines.length} SKU</span>
-                </div>
-                {lines.length === 0 ? (
-                  <div className="rounded-xl border border-dashed border-border px-4 py-7 text-center text-sm text-muted-foreground" data-testid="status-visit-lines-empty">
-                    Belum ada SKU ditambahkan.
-                  </div>
+              {/* SEARCH BAR */}
+              <div className="relative mb-3">
+                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <input 
+                  type="search" 
+                  placeholder="Cari produk..." 
+                  value={visitSearch}
+                  onChange={e => setVisitSearch(e.target.value)}
+                  className="h-10 w-full rounded-lg border border-input bg-background pl-9 pr-3 text-sm" 
+                />
+              </div>
+
+              {/* LIST TABLE */}
+              <div className="mb-5 max-h-[50vh] overflow-y-auto rounded-xl border border-border">
+                {filteredVisitProducts.length === 0 ? (
+                  <div className="p-5 text-center text-sm text-muted-foreground">Produk tidak ditemukan.</div>
                 ) : (
-                  <ul className="space-y-2">
-                    {lines.map((line) => {
-                      const total = line.displayQuantity + line.secondaryDisplayQuantity + line.warehouseQuantity;
+                  <div className="divide-y divide-border">
+                    {filteredVisitProducts.map((p) => {
+                      const qty = draftQuantities[p.barcode] || { display: "", secondary: "", warehouse: "" };
                       return (
-                        <li key={line.barcode} className="flex items-center justify-between gap-3 rounded-xl border border-border p-3" data-testid={`row-visit-line-${line.barcode}`}>
-                          <div className="min-w-0">
-                            <p className="truncate text-sm font-semibold">{line.product}</p>
-                            <p className="mt-0.5 font-mono text-xs text-muted-foreground">{line.barcode} · Display {line.displayQuantity} · Secondary {line.secondaryDisplayQuantity} · Gudang {line.warehouseQuantity}</p>
+                        <div key={p.barcode} className="flex flex-col gap-2 p-3 hover:bg-muted/30">
+                          <div className="flex items-center justify-between">
+                            <span className="text-sm font-semibold">{p.name}</span>
+                            <span className="text-[10px] font-mono text-muted-foreground bg-muted px-1.5 py-0.5 rounded">{p.barcode}</span>
                           </div>
-                          <div className="flex shrink-0 items-center gap-2">
-                            <span className="font-mono text-lg font-bold">{total}</span>
-                            <button
-                              type="button"
-                              onClick={() => setLines((current) => current.filter((item) => item.barcode !== line.barcode))}
-                              className="rounded-lg p-2 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-                              aria-label={`Hapus ${line.product}`}
-                              data-testid={`button-remove-visit-line-${line.barcode}`}
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </button>
+                          <div className="grid grid-cols-3 gap-2">
+                            <div>
+                              <label className="text-[10px] font-semibold text-muted-foreground uppercase">Display</label>
+                              <input
+                                type="number"
+                                inputMode="numeric"
+                                placeholder="0"
+                                value={qty.display}
+                                onChange={(e) => handleDraftChange(p.barcode, 'display', e.target.value)}
+                                className="h-10 w-full rounded-md border border-input bg-background text-center text-sm font-bold focus:border-primary focus:ring-1 focus:ring-primary"
+                              />
+                            </div>
+                            <div>
+                              <label className="text-[10px] font-semibold text-muted-foreground uppercase">Secondary</label>
+                              <input
+                                type="number"
+                                inputMode="numeric"
+                                placeholder="0"
+                                value={qty.secondary}
+                                onChange={(e) => handleDraftChange(p.barcode, 'secondary', e.target.value)}
+                                className="h-10 w-full rounded-md border border-input bg-background text-center text-sm font-bold focus:border-primary focus:ring-1 focus:ring-primary"
+                              />
+                            </div>
+                            <div>
+                              <label className="text-[10px] font-semibold text-muted-foreground uppercase">Gudang</label>
+                              <input
+                                type="number"
+                                inputMode="numeric"
+                                placeholder="0"
+                                value={qty.warehouse}
+                                onChange={(e) => handleDraftChange(p.barcode, 'warehouse', e.target.value)}
+                                className="h-10 w-full rounded-md border border-input bg-background text-center text-sm font-bold focus:border-primary focus:ring-1 focus:ring-primary"
+                              />
+                            </div>
                           </div>
-                        </li>
+                        </div>
                       );
                     })}
-                  </ul>
+                  </div>
                 )}
               </div>
 
               <Form {...visitForm}>
-                <form onSubmit={onSaveVisit} className="mt-5 border-t border-border pt-5">
+                <form onSubmit={onSaveVisit} className="border-t border-border pt-4">
                   <FormField
                     control={visitForm.control}
                     name="visitedAt"
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>Waktu kunjungan</FormLabel>
+                        <FormLabel className="text-xs">Waktu kunjungan</FormLabel>
                         <FormControl>
-                          <input {...field} type="datetime-local" className="h-11 w-full rounded-lg border border-input bg-background px-3 text-sm" data-testid="input-visit-time" />
+                          <input {...field} type="datetime-local" className="h-10 w-full rounded-lg border border-input bg-background px-3 text-sm" />
                         </FormControl>
                         <FormMessage />
                       </FormItem>
                     )}
                   />
                   {visitForm.formState.errors.root?.message && (
-                    <p className="mt-2 text-sm text-destructive" role="alert" data-testid="status-visit-form-error">{visitForm.formState.errors.root.message}</p>
+                    <p className="mt-2 text-sm text-destructive font-semibold" role="alert">{visitForm.formState.errors.root.message}</p>
                   )}
                   <button
                     type="submit"
-                    disabled={createVisit.isPending || lines.length === 0 || !activeStore}
-                    className="mt-4 inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 text-sm font-semibold text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-                    data-testid="button-save-visit"
+                    disabled={createVisit.isPending}
+                    className="mt-4 inline-flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 text-sm font-semibold text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
                   >
-                    <ClipboardCheck className="h-4 w-4" />
-                    {createVisit.isPending ? "Menyimpan kunjungan..." : "Simpan kunjungan SO"}
+                    <ClipboardCheck className="h-5 w-5" />
+                    {createVisit.isPending ? "Menyimpan..." : "Simpan Kunjungan SO"}
                   </button>
                 </form>
               </Form>
             </section>
 
+            {/* RIWAYAT KUNJUNGAN */}
             <section className="rounded-2xl border border-border bg-card p-5">
               <h2 className="font-serif text-xl font-bold">Kunjungan terakhir</h2>
               <p className="mb-4 mt-1 text-sm text-muted-foreground">
@@ -711,25 +698,22 @@ export default function Operations() {
                       id="restock-product-select"
                       value={restockProductSelection}
                       onChange={(event) => {
-                        const product = productOptions.find((item) => item.barcode === event.target.value);
+                        const product = allProductOptions.find((item) => item.barcode === event.target.value);
                         setRestockProductSelection(product?.barcode ?? "");
                         if (product) {
                           restockForm.setValue("barcode", product.barcode, { shouldDirty: true, shouldValidate: true });
                           restockForm.setValue("product", product.name, { shouldDirty: true, shouldValidate: true });
                         }
                       }}
-                      disabled={productOptions.length === 0}
+                      disabled={allProductOptions.length === 0}
                       className="h-11 w-full rounded-lg border border-input bg-background px-3 text-sm disabled:opacity-60"
                       data-testid="select-restock-product"
                     >
                       <option value="">Pilih produk dari daftar</option>
-                      {productOptions.map((product) => (
+                      {allProductOptions.map((product) => (
                         <option key={product.barcode} value={product.barcode}>{product.name} · {product.barcode}</option>
                       ))}
                     </select>
-                    <p className="mt-1.5 text-xs text-muted-foreground">
-                      Atau isi nama dan barcode/kode produk secara manual di bawah. Pemindai hanya pilihan.
-                    </p>
                   </div>
                   <FormField
                     control={restockForm.control}
@@ -747,7 +731,7 @@ export default function Operations() {
                               }}
                               onChange={(event) => {
                                 field.onChange(event);
-                                const match = productOptions.find((product) => product.barcode === event.target.value.trim());
+                                const match = allProductOptions.find((product) => product.barcode === event.target.value.trim());
                                 setRestockProductSelection(match?.barcode ?? "");
                                 restockForm.setValue("product", match?.name ?? "", { shouldDirty: true, shouldValidate: false });
                               }}
@@ -759,15 +743,13 @@ export default function Operations() {
                               type="button"
                               onClick={() => setScannerTarget("restock")}
                               className="inline-flex h-11 shrink-0 items-center gap-2 rounded-lg border border-border bg-card px-3 text-sm font-semibold hover:bg-muted"
-                              aria-label="Scan barcode barang masuk"
-                              data-testid="button-scan-restock-barcode"
                             >
                               <Camera className="h-4 w-4" /> Scan
                             </button>
                           </div>
                         </FormControl>
                         <datalist id="restock-product-barcodes">
-                          {productOptions.map((product) => <option key={product.barcode} value={product.barcode} label={product.name} />)}
+                          {allProductOptions.map((product) => <option key={product.barcode} value={product.barcode} label={product.name} />)}
                         </datalist>
                         <FormMessage />
                       </FormItem>
@@ -795,11 +777,6 @@ export default function Operations() {
                       </FormItem>
                     )}
                   />
-                  {productOptions.length === 0 && (
-                    <p className="-mt-2 text-xs text-muted-foreground">
-                      Belum ada produk tersimpan. Masukkan nama dan barcode/kode produk sendiri; tidak perlu scan.
-                    </p>
-                  )}
                   <FormField
                     control={restockForm.control}
                     name="quantity"
@@ -807,7 +784,7 @@ export default function Operations() {
                       <FormItem>
                         <FormLabel>Jumlah diterima</FormLabel>
                         <FormControl>
-                          <input {...field} type="number" min="1" step="1" inputMode="numeric" placeholder="Contoh: 12" className="h-11 w-full rounded-lg border border-input bg-background px-3 text-sm" data-testid="input-restock-quantity" />
+                          <input {...field} type="number" min="1" step="1" inputMode="numeric" placeholder="Contoh: 12" className="h-11 w-full rounded-lg border border-input bg-background px-3 text-sm" />
                         </FormControl>
                         <FormMessage />
                       </FormItem>
@@ -820,7 +797,7 @@ export default function Operations() {
                       <FormItem>
                         <FormLabel>Waktu diterima</FormLabel>
                         <FormControl>
-                          <input {...field} type="datetime-local" className="h-11 w-full rounded-lg border border-input bg-background px-3 text-sm" data-testid="input-restock-time" />
+                          <input {...field} type="datetime-local" className="h-11 w-full rounded-lg border border-input bg-background px-3 text-sm" />
                         </FormControl>
                         <FormMessage />
                       </FormItem>
@@ -833,7 +810,7 @@ export default function Operations() {
                       <FormItem>
                         <FormLabel>Catatan (opsional)</FormLabel>
                         <FormControl>
-                          <textarea {...field} rows={3} maxLength={500} placeholder="Contoh: pengiriman pagi" className="w-full resize-y rounded-lg border border-input bg-background px-3 py-2 text-sm" data-testid="input-restock-note" />
+                          <textarea {...field} rows={3} maxLength={500} placeholder="Contoh: pengiriman pagi" className="w-full resize-y rounded-lg border border-input bg-background px-3 py-2 text-sm" />
                         </FormControl>
                         <FormMessage />
                       </FormItem>
@@ -843,7 +820,6 @@ export default function Operations() {
                     type="submit"
                     disabled={createRestock.isPending || !activeStore}
                     className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 text-sm font-semibold text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-                    data-testid="button-save-restock"
                   >
                     <PackagePlus className="h-4 w-4" />
                     {createRestock.isPending ? "Menyimpan barang masuk..." : "Simpan barang masuk"}
@@ -868,7 +844,6 @@ export default function Operations() {
                   }}
                   placeholder="Cari produk, barcode, atau toko"
                   className="h-10 w-full rounded-lg border border-input bg-background px-3 text-sm"
-                  data-testid="input-search-restocks"
                 />
               </label>
               {restockHistoryQuery.isLoading ? (
@@ -882,7 +857,7 @@ export default function Operations() {
                   <button type="button" onClick={() => restockHistoryQuery.refetch()} className="mt-2 text-xs font-semibold text-primary underline underline-offset-2">Coba lagi</button>
                 </div>
               ) : visibleRestocks.length === 0 ? (
-                <div className="rounded-xl border border-dashed border-border px-4 py-7 text-center text-sm text-muted-foreground" data-testid="status-restocks-empty">
+                <div className="rounded-xl border border-dashed border-border px-4 py-7 text-center text-sm text-muted-foreground">
                   {(restockHistoryQuery.data ?? []).length === 0
                     ? "Belum ada barang masuk tersimpan."
                     : "Tidak ada barang masuk yang cocok dengan pencarian."}
@@ -892,7 +867,7 @@ export default function Operations() {
                 <ul className="space-y-3">
                   {visibleRestocks.slice(0, restockDisplayLimit).map((entry) => {
                     return (
-                    <li key={entry.id} className="rounded-xl border border-border p-3" data-testid={`row-restock-history-${entry.id}`}>
+                    <li key={entry.id} className="rounded-xl border border-border p-3">
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
                           <p className="truncate text-sm font-semibold">{entry.product} <span className="font-mono text-xs font-normal text-muted-foreground">· {entry.barcode}</span></p>
@@ -910,7 +885,6 @@ export default function Operations() {
                               onClick={() => onDeleteRestock(entry)}
                               disabled={deleteRestock.isPending}
                               className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-destructive/30 px-2.5 text-xs font-semibold text-destructive hover:bg-destructive/5 disabled:opacity-50"
-                              data-testid={`button-delete-restock-${entry.id}`}
                             >
                               <Trash2 className="h-3.5 w-3.5" /> Hapus
                             </button>
@@ -931,7 +905,7 @@ export default function Operations() {
                   )}
                 </div>
 
-                <p className="mt-3 text-xs text-muted-foreground text-center" data-testid="text-restock-history-count">
+                <p className="mt-3 text-xs text-muted-foreground text-center">
                   {visibleRestocks.length} catatan ditemukan
                 </p>
                 </>
