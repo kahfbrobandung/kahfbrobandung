@@ -2,7 +2,6 @@ import { useMemo, useRef, useState } from "react";
 import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
-// 1. TAMBAHKAN useLocation DI SINI
 import { Link, useLocation } from "wouter";
 import { useQueryClient } from "@tanstack/react-query";
 import {
@@ -87,7 +86,6 @@ function formatDate(value: string) {
 }
 
 export default function Operations() {
-  // 2. TAMBAHKAN HOOK INI UNTUK NAVIGASI
   const [, setLocation] = useLocation();
 
   const { products } = useProducts();
@@ -99,6 +97,11 @@ export default function Operations() {
   const [restockProductSelection, setRestockProductSelection] = useState("");
   const [lines, setLines] = useState<StocktakeLineInput[]>([]);
   const [restockSearch, setRestockSearch] = useState("");
+  
+  // STATE BARU UNTUK PAGINATION
+  const [visitDisplayLimit, setVisitDisplayLimit] = useState(5);
+  const [restockDisplayLimit, setRestockDisplayLimit] = useState(5);
+
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const visitClientId = useRef<string | null>(null);
@@ -107,7 +110,7 @@ export default function Operations() {
   const storesQuery = useListStores({
     query: { queryKey: getListStoresQueryKey(), staleTime: 5 * 60 * 1000 },
   });
-  const visitParams = { store: activeStore || undefined, limit: 25 };
+  const visitParams = { store: activeStore || undefined, limit: 50 }; // Dinaikkan jadi 50 agar pagination lebih berguna
   const visitHistoryQuery = useListStockVisits(visitParams, {
     query: {
       queryKey: getListStockVisitsQueryKey(visitParams),
@@ -207,12 +210,13 @@ export default function Operations() {
     queryClient.invalidateQueries({ queryKey: getListStockRestocksQueryKey() });
     queryClient.invalidateQueries({ queryKey: getListStockBalancesQueryKey() });
     queryClient.invalidateQueries({ queryKey: getListStoresQueryKey() });
-    queryClient.invalidateQueries({ queryKey: getGetSalesMonitorQueryKey() });
-    queryClient.invalidateQueries({ queryKey: getGetSalesActivityQueryKey() });
+    queryClient.invalidateQueries({ queryKey: getGetSalesMonitorQueryKey() SO });
+    queryClient.invalidateQueries({ queryKey: get
+GetSalesActivityQuery         Key() });
   };
 
-  const onAddLine = lineForm.handleSubmit((values) => {
-    if (!activeStore) {
+  </ const onAddLine = lineForm.handleSubmit((values) => {
+    if (!activeStorebutton) {
       toast({
         title: "Pilih toko terlebih dahulu",
         description: "Satu kunjungan hanya boleh berisi stok dari satu toko.",
@@ -347,7 +351,7 @@ export default function Operations() {
         refreshAffectedData();
         toast({ title: "Kunjungan dihapus", description: "Saldo dan perhitungan penjualan diperbarui." });
       },
-      onError: (error) => toast({ title: "Kunjungan belum dihapus", description: errorus.message || "Coba lagi.", variant: "destructive" }),
+      onError: (error) => toast({ title: "Kunjungan belum dihapus", description: error.message || "Coba lagi.", variant: "destructive" }),
     });
   };
 
@@ -356,7 +360,7 @@ export default function Operations() {
     deleteRestock.mutate({ id: entry.id }, {
       onSuccess: () => {
         refreshAffectedData();
-        toast({ title: "Barang masuk dihap", description: "Saldo dan perhitungan penjualan diperbarui." });
+        toast({ title: "Barang masuk dihapus", description: "Saldo dan perhitungan penjualan diperbarui." });
       },
       onError: (error) => toast({ title: "Barang masuk belum dihapus", description: error.message || "Coba lagi.", variant: "destructive" }),
     });
@@ -376,7 +380,6 @@ export default function Operations() {
             </p>
           </div>
           
-          {/* 3. TOMBOL INI SUDAH MENGGUNAKAN setLocation AGAR PASTI BISA DIKLIK */}
           <button
             type="button"
             onClick={() => setLocation("/dashboard")}
@@ -418,8 +421,7 @@ export default function Operations() {
             className={`inline-flex h-10 items-center justify-center gap-2 rounded-lg px-3 text-sm font-semibold transition ${activeTab === "visit" ? "bg-card text-foreground" : "text-muted-foreground hover:text-foreground"}`}
             data-testid="tab-stock-visit"
           >
-            <ClipboardCheck className="h-4 w-4" /> Kunjungan SO
-          </button>
+            <ClipboardCheck className="h-4 w-4" /> Kunjungan>
           <button
             type="button"
             role="tab"
@@ -662,22 +664,34 @@ export default function Operations() {
                   Belum ada kunjungan SO tersimpan untuk toko ini.
                 </div>
               ) : (
-                <ul className="space-y-3">
-                  {(visitHistoryQuery.data ?? []).slice(0, 10).map((visit) => (
-                    <li key={visit.id} className="rounded-xl border border-border p-3" data-testid={`row-visit-history-${visit.id}`}>
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <p className="truncate text-sm font-semibold">{visit.store}</p>
-                          <p className="mt-1 text-xs text-muted-foreground">{formatDate(visit.visitedAt)}</p>
+                <>
+                  <ul className="space-y-3">
+                    {(visitHistoryQuery.data ?? []).slice(0, visitDisplayLimit).map((visit) => (
+                      <li key={visit.id} className="rounded-xl border border-border p-3" data-testid={`row-visit-history-${visit.id}`}>
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-semibold">{visit.store}</p>
+                            <p className="mt-1 text-xs text-muted-foreground">{formatDate(visit.visitedAt)}</p>
+                          </div>
+                          <div className="flex shrink-0 items-center gap-2">
+                            <span className="rounded-full bg-muted px-2.5 py-1 text-xs font-semibold">{visit.lines?.length ?? 0} SKU</span>
+                            <button type="button" onClick={() => onDeleteVisit(visit.id)} disabled={deleteVisit.isPending} className="rounded-lg p-2 text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:opacity-50" aria-label={`Hapus kunjungan ${formatDate(visit.visitedAt)}`} data-testid={`button-delete-visit-${visit.id}`}><Trash2 className="h-4 w-4" /></button>
+                          </div>
                         </div>
-                        <div className="flex shrink-0 items-center gap-2">
-                          <span className="rounded-full bg-muted px-2.5 py-1 text-xs font-semibold">{visit.lines?.length ?? 0} SKU</span>
-                          <button type="button" onClick={() => onDeleteVisit(visit.id)} disabled={deleteVisit.isPending} className="rounded-lg p-2 text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:opacity-50" aria-label={`Hapus kunjungan ${formatDate(visit.visitedAt)}`} data-testid={`button-delete-visit-${visit.id}`}><Trash2 className="h-4 w-4" /></button>
-                        </div>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
+                      </li>
+                    ))}
+                  </ul>
+                  
+                  {/* TOMBOL PAGINATION KUNJUNGAN */}
+                  <div className="flex gap-2 mt-4">
+                    {visitDisplayLimit > 5 && (
+                      <button type="button" onClick={() => setVisitDisplayLimit(prev => Math.max(5, prev - 5))} className="flex-1 py-2 text-sm font-semibold text-muted-foreground border border-border rounded-xl hover:bg-muted/50">Muat Lebih Sedikit</button>
+                    )}
+                    {visitDisplayLimit < (visitHistoryQuery.data ?? []).length && (
+                      <button type="button" onClick={() => setVisitDisplayLimit(prev => prev + 5)} className="flex-1 py-2 text-sm font-semibold text-primary border border-primary/30 rounded-xl hover:bg-primary/5">Muat Lebih Banyak</button>
+                    )}
+                  </div>
+                </>
               )}
             </section>
           </div>
@@ -847,7 +861,10 @@ export default function Operations() {
                 <input
                   type="search"
                   value={restockSearch}
-                  onChange={(event) => setRestockSearch(event.target.value)}
+                  onChange={(event) => {
+                    setRestockSearch(event.target.value);
+                    setRestockDisplayLimit(5); // Reset pagination saat mencari
+                  }}
                   placeholder="Cari produk, barcode, atau toko"
                   className="h-10 w-full rounded-lg border border-input bg-background px-3 text-sm"
                   data-testid="input-search-restocks"
@@ -871,8 +888,8 @@ export default function Operations() {
                 </div>
               ) : (
                 <>
-                <ul className="max-h-[44rem] space-y-3 overflow-y-auto pr-1">
-                  {visibleRestocks.map((entry) => {
+                <ul className="space-y-3">
+                  {visibleRestocks.slice(0, restockDisplayLimit).map((entry) => {
                     return (
                     <li key={entry.id} className="rounded-xl border border-border p-3" data-testid={`row-restock-history-${entry.id}`}>
                       <div className="flex items-start justify-between gap-3">
@@ -903,9 +920,19 @@ export default function Operations() {
                   );
                   })}
                 </ul>
-                <p className="mt-3 text-xs text-muted-foreground" data-testid="text-restock-history-count">
-                  {visibleRestocks.length} dari {(restockHistoryQuery.data ?? []).length} catatan barang masuk ditampilkan
-                  {(restockHistoryQuery.data ?? []).length === 500 ? " · menampilkan 500 catatan terbaru" : ""}
+
+                {/* TOMBOL PAGINATION BARANG MASUK */}
+                <div className="flex gap-2 mt-4">
+                  {restockDisplayLimit > 5 && (
+                    <button type="button" onClick={() => setRestockDisplayLimit(prev => Math.max(5, prev - 5))} className="flex-1 py-2 text-sm font-semibold text-muted-foreground border border-border rounded-xl hover:bg-muted/50">Muat Lebih Sedikit</button>
+                  )}
+                  {restockDisplayLimit < visibleRestocks.length && (
+                    <button type="button" onClick={() => setRestockDisplayLimit(prev => prev + 5)} className="flex-1 py-2 text-sm font-semibold text-primary border border-primary/30 rounded-xl hover:bg-primary/5">Muat Lebih Banyak</button>
+                  )}
+                </div>
+
+                <p className="mt-3 text-xs text-muted-foreground text-center" data-testid="text-restock-history-count">
+                  {visibleRestocks.length} catatan ditemukan
                 </p>
                 </>
               )}
