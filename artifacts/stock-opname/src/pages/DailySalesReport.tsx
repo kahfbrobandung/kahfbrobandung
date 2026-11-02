@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { Link } from "wouter";
 import { ArrowLeft, TrendingUp, PackageMinus } from "lucide-react";
 import { useGetSalesMonitor } from "@workspace/api-client-react";
@@ -8,8 +8,8 @@ export default function DailySalesReport() {
   const [storeName] = useStoreName();
   const activeStore = storeName.trim();
   
-  // STATE UNTUK PAGINATION LAPORAN (Muat lebih banyak/sedikit)
-  const [visibleCount, setVisibleCount] = useState(5);
+  // STATE UNTUK PAGINATION LAPORAN BERDASARKAN TANGGAL
+  const [visibleDatesCount, setVisibleDatesCount] = useState(1);
 
   // Default filter 30 hari terakhir
   const [dateRange, setDateRange] = useState({
@@ -26,9 +26,26 @@ export default function DailySalesReport() {
 
   // Filter hanya barang yang benar-benar terjual (di atas 0)
   const soldItems = salesMonitor?.calculations?.filter((item) => item.soldQuantity > 0) || [];
-  
-  // Potong data sesuai batas yang ditampilkan (awal 5)
-  const displayedItems = soldItems.slice(0, visibleCount);
+
+  // 1. Kelompokkan barang berdasarkan tanggal SO
+  const groupedItems = useMemo(() => {
+    const groups: Record<string, typeof soldItems> = {};
+    soldItems.forEach((item) => {
+      // Ambil format YYYY-MM-DD untuk sorting
+      const dateStr = new Date(item.currentVisitAt).toISOString().split("T")[0];
+      if (!groups[dateStr]) groups[dateStr] = [];
+      groups[dateStr].push(item);
+    });
+    return groups;
+  }, [soldItems]);
+
+  // 2. Ambil semua tanggal unik dan urutkan dari yang terbaru
+  const sortedDates = useMemo(() => {
+    return Object.keys(groupedItems).sort((a, b) => b.localeCompare(a));
+  }, [groupedItems]);
+
+  // 3. Potong tanggal yang mau ditampilkan
+  const visibleDates = sortedDates.slice(0, visibleDatesCount);
 
   return (
     <div className="min-h-[100dvh] w-full bg-background flex flex-col items-center pb-12">
@@ -56,7 +73,7 @@ export default function DailySalesReport() {
               value={dateRange.from}
               onChange={(e) => {
                 setDateRange({ ...dateRange, from: e.target.value });
-                setVisibleCount(5); // Reset jumlah tampilan saat tanggal diubah
+                setVisibleDatesCount(1); // Reset tampilan ke tanggal terbaru
               }}
               className="w-full px-3 py-2 bg-background border border-border rounded-xl text-sm"
             />
@@ -68,7 +85,7 @@ export default function DailySalesReport() {
               value={dateRange.to}
               onChange={(e) => {
                 setDateRange({ ...dateRange, to: e.target.value });
-                setVisibleCount(5); // Reset jumlah tampilan saat tanggal diubah
+                setVisibleDatesCount(1); // Reset tampilan ke tanggal terbaru
               }}
               className="w-full px-3 py-2 bg-background border border-border rounded-xl text-sm"
             />
@@ -114,67 +131,77 @@ export default function DailySalesReport() {
             </div>
           ) : (
             <>
-              <ul className="space-y-4">
-                {displayedItems.map((item, index) => (
-                  <li key={`${item.barcode}-${index}`} className="border border-border rounded-xl p-4 shadow-sm bg-card">
-                    
-                    {/* Baris Atas: Nama Produk & Angka Terjual */}
-                    <div className="flex justify-between items-start mb-3">
-                      <div className="pr-2">
-                        <p className="text-sm font-bold text-foreground">{item.product}</p>
-                        <p className="text-[11px] text-muted-foreground font-mono">{item.barcode}</p>
-                      </div>
-                      <div className="text-right shrink-0">
-                        <p className="text-[10px] uppercase tracking-wider font-semibold text-muted-foreground">Terjual</p>
-                        <p className="text-2xl font-bold text-emerald-600">
-                          {item.soldQuantity} <span className="text-xs font-normal text-emerald-600/70">pcs</span>
-                        </p>
-                      </div>
+              <div className="space-y-8">
+                {visibleDates.map((date) => (
+                  <div key={date}>
+                    {/* Header Tanggal */}
+                    <div className="sticky top-[80px] z-10 bg-card/95 backdrop-blur-sm py-2 mb-3 border-b border-border/50">
+                      <h4 className="font-bold text-gray-800 uppercase tracking-wide text-xs flex items-center gap-2">
+                        <span className="w-2 h-2 rounded-full bg-primary block"></span>
+                        {new Date(date).toLocaleDateString("id-ID", { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' })}
+                      </h4>
                     </div>
 
-                    {/* Baris Bawah: Rincian Hitungan */}
-                    <div className="grid grid-cols-3 gap-1 bg-muted/50 rounded-lg p-2 text-center">
-                      <div>
-                        <p className="text-[10px] text-muted-foreground">Stok Awal</p>
-                        <p className="text-sm font-semibold">{item.previousStock}</p>
-                      </div>
-                      <div className="border-x border-border/50">
-                        <p className="text-[10px] text-muted-foreground">Stok Masuk</p>
-                        <p className="text-sm font-semibold text-blue-600">+{item.restockQuantity + item.stockEntryAdjustment}</p>
-                      </div>
-                      <div>
-                        <p className="text-[10px] text-muted-foreground">Stok Akhir (SO)</p>
-                        <p className="text-sm font-semibold">{item.currentStock}</p>
-                      </div>
-                    </div>
-                    
-                    <p className="text-[10px] text-muted-foreground text-center mt-2">
-                      SO Terakhir: {new Date(item.currentVisitAt).toLocaleDateString("id-ID", { day: "2-digit", month: "short", year: "numeric" })}
-                    </p>
+                    {/* List Barang di Tanggal Tersebut */}
+                    <ul className="space-y-4">
+                      {groupedItems[date].map((item, index) => (
+                        <li key={`${item.barcode}-${index}`} className="border border-border rounded-xl p-4 shadow-sm bg-card hover:border-primary/30 transition-colors">
+                          
+                          {/* Baris Atas: Nama Produk & Angka Terjual */}
+                          <div className="flex justify-between items-start mb-3">
+                            <div className="pr-2">
+                              <p className="text-sm font-bold text-foreground">{item.product}</p>
+                              <p className="text-[11px] text-muted-foreground font-mono">{item.barcode}</p>
+                            </div>
+                            <div className="text-right shrink-0">
+                              <p className="text-[10px] uppercase tracking-wider font-semibold text-muted-foreground">Terjual</p>
+                              <p className="text-2xl font-bold text-emerald-600">
+                                {item.soldQuantity} <span className="text-xs font-normal text-emerald-600/70">pcs</span>
+                              </p>
+                            </div>
+                          </div>
 
-                  </li>
+                          {/* Baris Bawah: Rincian Hitungan */}
+                          <div className="grid grid-cols-3 gap-1 bg-muted/50 rounded-lg p-2 text-center">
+                            <div>
+                              <p className="text-[10px] text-muted-foreground">Stok Awal</p>
+                              <p className="text-sm font-semibold">{item.previousStock}</p>
+                            </div>
+                            <div className="border-x border-border/50">
+                              <p className="text-[10px] text-muted-foreground">Stok Masuk</p>
+                              <p className="text-sm font-semibold text-blue-600">+{item.restockQuantity + item.stockEntryAdjustment}</p>
+                            </div>
+                            <div>
+                              <p className="text-[10px] text-muted-foreground">Stok Akhir (SO)</p>
+                              <p className="text-sm font-semibold">{item.currentStock}</p>
+                            </div>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
                 ))}
-              </ul>
+              </div>
 
-              {/* TOMBOL PAGINATION LAPORAN */}
-              <div className="flex gap-2 mt-4">
-                {visibleCount > 5 && (
+              {/* TOMBOL PAGINATION LAPORAN (BERDASARKAN TANGGAL) */}
+              <div className="flex gap-2 mt-6 border-t border-border pt-4">
+                {visibleDatesCount > 1 && (
                   <button
                     type="button"
-                    onClick={() => setVisibleCount((prev) => Math.max(5, prev - 5))}
+                    onClick={() => setVisibleDatesCount((prev) => Math.max(1, prev - 1))}
                     className="flex-1 py-2.5 text-sm font-semibold text-muted-foreground border border-border rounded-xl hover:bg-muted/50 transition-colors"
                   >
                     Muat Lebih Sedikit
                   </button>
                 )}
                 
-                {visibleCount < soldItems.length && (
+                {visibleDatesCount < sortedDates.length && (
                   <button
                     type="button"
-                    onClick={() => setVisibleCount((prev) => prev + 5)}
+                    onClick={() => setVisibleDatesCount((prev) => prev + 1)}
                     className="flex-1 py-2.5 text-sm font-semibold text-primary border border-primary/30 rounded-xl hover:bg-primary/5 transition-colors"
                   >
-                    Muat Lebih Banyak
+                    Muat Tanggal Sebelumnya
                   </button>
                 )}
               </div>
