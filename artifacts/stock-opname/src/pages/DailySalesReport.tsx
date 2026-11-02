@@ -8,6 +8,9 @@ export default function DailySalesReport() {
   const [storeName] = useStoreName();
   const activeStore = storeName.trim();
   
+  // STATE UNTUK PAGINATION LAPORAN (Muat lebih banyak/sedikit)
+  const [visibleCount, setVisibleCount] = useState(5);
+
   // Default filter 30 hari terakhir
   const [dateRange, setDateRange] = useState({
     from: new Date(new Date().setDate(new Date().getDate() - 30)).toISOString().split("T")[0],
@@ -23,6 +26,9 @@ export default function DailySalesReport() {
 
   // Filter hanya barang yang benar-benar terjual (di atas 0)
   const soldItems = salesMonitor?.calculations?.filter((item) => item.soldQuantity > 0) || [];
+  
+  // Potong data sesuai batas yang ditampilkan (awal 5)
+  const displayedItems = soldItems.slice(0, visibleCount);
 
   return (
     <div className="min-h-[100dvh] w-full bg-background flex flex-col items-center pb-12">
@@ -48,7 +54,10 @@ export default function DailySalesReport() {
             <input
               type="date"
               value={dateRange.from}
-              onChange={(e) => setDateRange({ ...dateRange, from: e.target.value })}
+              onChange={(e) => {
+                setDateRange({ ...dateRange, from: e.target.value });
+                setVisibleCount(5); // Reset jumlah tampilan saat tanggal diubah
+              }}
               className="w-full px-3 py-2 bg-background border border-border rounded-xl text-sm"
             />
           </div>
@@ -57,7 +66,10 @@ export default function DailySalesReport() {
             <input
               type="date"
               value={dateRange.to}
-              onChange={(e) => setDateRange({ ...dateRange, to: e.target.value })}
+              onChange={(e) => {
+                setDateRange({ ...dateRange, to: e.target.value });
+                setVisibleCount(5); // Reset jumlah tampilan saat tanggal diubah
+              }}
               className="w-full px-3 py-2 bg-background border border-border rounded-xl text-sm"
             />
           </div>
@@ -101,47 +113,72 @@ export default function DailySalesReport() {
               <span className="text-xs">(Pastikan ada minimal 2x Kunjungan SO untuk produk yang sama di toko ini).</span>
             </div>
           ) : (
-            <ul className="space-y-4">
-              {soldItems.map((item, index) => (
-                <li key={`${item.barcode}-${index}`} className="border border-border rounded-xl p-4 shadow-sm bg-card">
-                  
-                  {/* Baris Atas: Nama Produk & Angka Terjual */}
-                  <div className="flex justify-between items-start mb-3">
-                    <div className="pr-2">
-                      <p className="text-sm font-bold text-foreground">{item.product}</p>
-                      <p className="text-[11px] text-muted-foreground font-mono">{item.barcode}</p>
+            <>
+              <ul className="space-y-4">
+                {displayedItems.map((item, index) => (
+                  <li key={`${item.barcode}-${index}`} className="border border-border rounded-xl p-4 shadow-sm bg-card">
+                    
+                    {/* Baris Atas: Nama Produk & Angka Terjual */}
+                    <div className="flex justify-between items-start mb-3">
+                      <div className="pr-2">
+                        <p className="text-sm font-bold text-foreground">{item.product}</p>
+                        <p className="text-[11px] text-muted-foreground font-mono">{item.barcode}</p>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <p className="text-[10px] uppercase tracking-wider font-semibold text-muted-foreground">Terjual</p>
+                        <p className="text-2xl font-bold text-emerald-600">
+                          {item.soldQuantity} <span className="text-xs font-normal text-emerald-600/70">pcs</span>
+                        </p>
+                      </div>
                     </div>
-                    <div className="text-right shrink-0">
-                      <p className="text-[10px] uppercase tracking-wider font-semibold text-muted-foreground">Terjual</p>
-                      <p className="text-2xl font-bold text-emerald-600">
-                        {item.soldQuantity} <span className="text-xs font-normal text-emerald-600/70">pcs</span>
-                      </p>
-                    </div>
-                  </div>
 
-                  {/* Baris Bawah: Rincian Hitungan */}
-                  <div className="grid grid-cols-3 gap-1 bg-muted/50 rounded-lg p-2 text-center">
-                    <div>
-                      <p className="text-[10px] text-muted-foreground">Stok Awal</p>
-                      <p className="text-sm font-semibold">{item.previousStock}</p>
+                    {/* Baris Bawah: Rincian Hitungan */}
+                    <div className="grid grid-cols-3 gap-1 bg-muted/50 rounded-lg p-2 text-center">
+                      <div>
+                        <p className="text-[10px] text-muted-foreground">Stok Awal</p>
+                        <p className="text-sm font-semibold">{item.previousStock}</p>
+                      </div>
+                      <div className="border-x border-border/50">
+                        <p className="text-[10px] text-muted-foreground">Stok Masuk</p>
+                        <p className="text-sm font-semibold text-blue-600">+{item.restockQuantity + item.stockEntryAdjustment}</p>
+                      </div>
+                      <div>
+                        <p className="text-[10px] text-muted-foreground">Stok Akhir (SO)</p>
+                        <p className="text-sm font-semibold">{item.currentStock}</p>
+                      </div>
                     </div>
-                    <div className="border-x border-border/50">
-                      <p className="text-[10px] text-muted-foreground">Stok Masuk</p>
-                      <p className="text-sm font-semibold text-blue-600">+{item.restockQuantity + item.stockEntryAdjustment}</p>
-                    </div>
-                    <div>
-                      <p className="text-[10px] text-muted-foreground">Stok Akhir (SO)</p>
-                      <p className="text-sm font-semibold">{item.currentStock}</p>
-                    </div>
-                  </div>
-                  
-                  <p className="text-[10px] text-muted-foreground text-center mt-2">
-                    SO Terakhir: {new Date(item.currentVisitAt).toLocaleDateString("id-ID", { day: "2-digit", month: "short", year: "numeric" })}
-                  </p>
+                    
+                    <p className="text-[10px] text-muted-foreground text-center mt-2">
+                      SO Terakhir: {new Date(item.currentVisitAt).toLocaleDateString("id-ID", { day: "2-digit", month: "short", year: "numeric" })}
+                    </p>
 
-                </li>
-              ))}
-            </ul>
+                  </li>
+                ))}
+              </ul>
+
+              {/* TOMBOL PAGINATION LAPORAN */}
+              <div className="flex gap-2 mt-4">
+                {visibleCount > 5 && (
+                  <button
+                    type="button"
+                    onClick={() => setVisibleCount((prev) => Math.max(5, prev - 5))}
+                    className="flex-1 py-2.5 text-sm font-semibold text-muted-foreground border border-border rounded-xl hover:bg-muted/50 transition-colors"
+                  >
+                    Muat Lebih Sedikit
+                  </button>
+                )}
+                
+                {visibleCount < soldItems.length && (
+                  <button
+                    type="button"
+                    onClick={() => setVisibleCount((prev) => prev + 5)}
+                    className="flex-1 py-2.5 text-sm font-semibold text-primary border border-primary/30 rounded-xl hover:bg-primary/5 transition-colors"
+                  >
+                    Muat Lebih Banyak
+                  </button>
+                )}
+              </div>
+            </>
           )}
         </div>
       </main>
