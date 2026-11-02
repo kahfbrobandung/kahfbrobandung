@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState, useEffect } from "react";
 import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
@@ -26,7 +26,10 @@ import { useStoreName } from "@/hooks/useStoreName";
 import { useToast } from "@/hooks/use-toast";
 import { BarcodeScanner } from "@/components/BarcodeScanner";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
-import { ArrowLeft, Boxes, Camera, ClipboardCheck, PackagePlus, Plus, Trash2, ShoppingCart, CheckCircle2, Search } from "lucide-react";
+import { ArrowLeft, Boxes, Camera, ClipboardCheck, PackagePlus, Plus, Trash2, ShoppingCart, CheckCircle2, Search, WifiOff, RefreshCw } from "lucide-react";
+
+// KUNCI UNTUK LOCAL STORAGE
+const OFFLINE_QUEUE_KEY = "erlangga_offline_queue";
 
 const visitCartItemSchema = z.object({
   barcode: z.string().trim().min(1, "Barcode wajib diisi."),
@@ -51,6 +54,7 @@ type VisitFormValues = z.infer<typeof visitFormSchema>;
 type RestockFormValues = z.infer<typeof restockFormSchema>;
 
 type CartItem = { barcode: string; product: string; quantity: number };
+type OfflineAction = { id: string; type: 'visit' | 'restock'; data: any };
 
 function localDateTime() {
   const now = new Date();
@@ -71,13 +75,17 @@ export default function Operations() {
   const [activeTab, setActiveTab] = useState<"visit" | "restock">("visit");
   const [scannerTarget, setScannerTarget] = useState<"visit" | "restock" | null>(null);
   
-  // STATE UNTUK SEARCHABLE DROPDOWN KUNJUNGAN
+  // STATE KONEKSI & SINKRONISASI
+  const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [pendingSyncCount, setPendingSyncCount] = useState(0);
+
+  // STATE SEARCHABLE DROPDOWN
   const [visitProductSelection, setVisitProductSelection] = useState("");
   const [visitSearchQuery, setVisitSearchQuery] = useState("");
   const [isVisitDropdownOpen, setIsVisitDropdownOpen] = useState(false);
   const qtyInputRef = useRef<HTMLInputElement>(null);
 
-  // STATE UNTUK SEARCHABLE DROPDOWN RESTOCK
   const [restockProductSelection, setRestockProductSelection] = useState("");
   const [restockSearchQuery, setRestockSearchQuery] = useState("");
   const [isRestockDropdownOpen, setIsRestockDropdownOpen] = useState(false);
@@ -121,9 +129,8 @@ export default function Operations() {
     return [...byBarcode.values()].sort((a, b) => a.name.localeCompare(b.name, "id"));
   }, [products, restockHistoryQuery.data, visitHistoryQuery.data, customProducts]);
 
-  // FILTER PENCARIAN KUNJUNGAN & RESTOCK
   const filteredVisitProducts = useMemo(() => {
-    if (!visitSearchQuery) return allProductOptions.slice(0, 10); // Tampilkan 10 produk pertama kalau kosong
+    if (!visitSearchQuery) return allProductOptions.slice(0, 10);
     const q = visitSearchQuery.toLowerCase();
     return allProductOptions.filter(p => p.name.toLowerCase().includes(q) || p.barcode.includes(q)).slice(0, 15);
   }, [allProductOptions, visitSearchQuery]);
@@ -156,13 +163,107 @@ export default function Operations() {
     defaultValues: { barcode: "", product: "", quantity: "", receivedAt: localDateTime(), note: "" },
   });
 
+  const createVisit = useCreateStockVisit();
+  const createRestock = useCreateStockRestock();
+  const deleteVisit = useDeleteStockVisit();
+  const deleteRestock = useDeleteStockRestock();
+
+  const refreshAffectedData = () => {
+    queryClient.invalidateQueries({ queryKey: getListStockVisitsQueryKey() });
+    queryClient.invalidateQueries({ queryKey: getListStockRestocksQueryKey() });
+    queryClient.invalidateQueries({ queryKey: getListStockBalancesQueryKey() });
+    queryClient.invalidateQueries({ queryKey: getListStoresQueryKey() });
+    queryClient.invalidateQueries({ queryKey: getGetSalesMonitorQueryKey() });
+    queryClient.invalidateQueries({ queryKey: getGetSalesActivityQueryKey() });
+  };
+
+  // --- LOGIKA OFFLINE MODE ---
+  const updatePendingCount = () => {
+    try {
+      const queue: OfflineAction[] = JSON.parse(localStorage.getItem(OFFLINE_QUEUE_KEY) || "[]");
+      setPendingSyncCount(queue.length);
+    } catch { setPendingSyncCount(0); }
+  };
+
+  const processQueue = async () => {
+    if (!navigator.onLine || isSyncing) return;
+    let queue: OfflineAction[] = [];
+    try { queue = JSON.parse(localStorage.getItem(OFFLINE_QUEUE_KEY) || "[]"); } catch { return; }
+    if (queue.length === 0) return;
+
+    setIsSyncing(true);
+    toast({ title: "Menyinkronkan data offline...", description: `Mengirim ${queue.length} data ke server.` });
+
+    const remainingQueue: OfflineAction[] = [];
+
+    for (const action of queue) {
+      try {
+        if (action.type === 'visit') {
+          // Menggunakan fetch langsung karena hook React Query butuh context komponen
+          // Asumsi endpoint /api/stock/visits
+          const res = await fetch("/api/stock/visits", {
+            method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(action.data)
+          });
+          if (!res.ok) throw new Error("Gagal sync visit");
+        } else if (action.type === 'restock') {
+          const res = await fetch("/api/stock/restocks", {
+            method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(action.data)
+          });
+          if (!res.ok) throw new Error("Gagal sync restock");
+        }
+      } catch (err) {
+        // Kalau gagal (misal server error), simpan lagi buat dicoba nanti
+        remainingQueue.push(action);
+      }
+    }
+
+    localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(remainingQueue));
+    updatePendingCount();
+    setIsSyncing(false);
+    
+    if (remainingQueue.length === 0) {
+      toast({ title: "Sinkronisasi Selesai!", description: "Semua data offline berhasil dikirim." });
+      refreshAffectedData();
+    } else {
+      toast({ title: "Sebagian data gagal dikirim", description: "Akan dicoba lagi saat online.", variant: "destructive" });
+    }
+  };
+
+  useEffect(() => {
+    updatePendingCount();
+    const handleOnline = () => { setIsOnline(true); processQueue(); };
+    const handleOffline = () => setIsOnline(false);
+    
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+    
+    // Coba sync pas pertama dimuat
+    if (navigator.onLine) processQueue();
+
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
+  }, []);
+
+  const saveToOfflineQueue = (type: 'visit' | 'restock', data: any) => {
+    try {
+      const queue: OfflineAction[] = JSON.parse(localStorage.getItem(OFFLINE_QUEUE_KEY) || "[]");
+      queue.push({ id: crypto.randomUUID(), type, data });
+      localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(queue));
+      updatePendingCount();
+    } catch (e) {
+      toast({ title: "Gagal menyimpan offline", description: "Memori HP mungkin penuh.", variant: "destructive" });
+    }
+  };
+  // ---------------------------
+
   const handleSelectVisitProduct = (product: { barcode: string; name: string }) => {
     setVisitProductSelection(product.barcode);
     setVisitSearchQuery(product.name);
     visitCartForm.setValue("barcode", product.barcode, { shouldValidate: true });
     visitCartForm.setValue("product", product.name, { shouldValidate: true });
     setIsVisitDropdownOpen(false);
-    // Otomatis fokus ke input jumlah
     setTimeout(() => qtyInputRef.current?.focus(), 50);
   };
 
@@ -203,15 +304,6 @@ export default function Operations() {
     });
   };
 
-  const refreshAffectedData = () => {
-    queryClient.invalidateQueries({ queryKey: getListStockVisitsQueryKey() });
-    queryClient.invalidateQueries({ queryKey: getListStockRestocksQueryKey() });
-    queryClient.invalidateQueries({ queryKey: getListStockBalancesQueryKey() });
-    queryClient.invalidateQueries({ queryKey: getListStoresQueryKey() });
-    queryClient.invalidateQueries({ queryKey: getGetSalesMonitorQueryKey() });
-    queryClient.invalidateQueries({ queryKey: getGetSalesActivityQueryKey() });
-  };
-
   const onAddToCart = visitCartForm.handleSubmit((values) => {
     const barcode = values.barcode.trim();
     const productName = values.product.trim();
@@ -230,15 +322,9 @@ export default function Operations() {
 
     visitCartForm.reset({ barcode: "", product: "", quantity: "" });
     setVisitProductSelection("");
-    setVisitSearchQuery(""); // Reset search bar
-    
+    setVisitSearchQuery(""); 
     toast({ title: "Masuk Keranjang", description: `+${qty} unit ${productName}` });
   });
-
-  const createVisit = useCreateStockVisit();
-  const createRestock = useCreateStockRestock();
-  const deleteVisit = useDeleteStockVisit();
-  const deleteRestock = useDeleteStockRestock();
 
   const onSaveVisit = visitForm.handleSubmit((values) => {
     if (!activeStore) {
@@ -259,8 +345,26 @@ export default function Operations() {
     }));
 
     visitClientId.current ??= crypto.randomUUID();
+    const payload = { 
+      clientId: visitClientId.current, 
+      store: activeStore, 
+      visitedAt: new Date(values.visitedAt).toISOString(), 
+      lines 
+    };
+
+    // JIKA OFFLINE, SIMPAN KE ANTREAN
+    if (!isOnline) {
+      saveToOfflineQueue('visit', payload);
+      visitClientId.current = null;
+      setCart([]);
+      visitForm.reset({ visitedAt: localDateTime() });
+      toast({ title: "Tersimpan di HP (Offline)", description: "Data akan dikirim otomatis saat sinyal kembali." });
+      return;
+    }
+
+    // JIKA ONLINE, KIRIM LANGSUNG
     createVisit.mutate(
-      { data: { clientId: visitClientId.current, store: activeStore, visitedAt: new Date(values.visitedAt).toISOString(), lines } },
+      { data: payload },
       {
         onSuccess: (visit) => {
           visitClientId.current = null;
@@ -279,9 +383,30 @@ export default function Operations() {
       toast({ title: "Pilih toko dulu", description: "Nama toko wajib diisi.", variant: "destructive" });
       return;
     }
+    
     restockClientId.current ??= crypto.randomUUID();
+    const payload = { 
+      clientId: restockClientId.current, 
+      store: activeStore, 
+      product: values.product.trim(), 
+      barcode: values.barcode.trim(), 
+      quantity: Number(values.quantity), 
+      receivedAt: new Date(values.receivedAt).toISOString(), 
+      ...(values.note.trim() ? { note: values.note.trim() } : {}) 
+    };
+
+    if (!isOnline) {
+      saveToOfflineQueue('restock', payload);
+      restockClientId.current = null;
+      setRestockProductSelection("");
+      setRestockSearchQuery("");
+      restockForm.reset({ barcode: "", product: "", quantity: "", receivedAt: localDateTime(), note: "" });
+      toast({ title: "Tersimpan di HP (Offline)", description: "Data akan dikirim otomatis saat sinyal kembali." });
+      return;
+    }
+
     createRestock.mutate(
-      { data: { clientId: restockClientId.current, store: activeStore, product: values.product.trim(), barcode: values.barcode.trim(), quantity: Number(values.quantity), receivedAt: new Date(values.receivedAt).toISOString(), ...(values.note.trim() ? { note: values.note.trim() } : {}) } },
+      { data: payload },
       {
         onSuccess: (entry) => {
           restockClientId.current = null;
@@ -315,6 +440,20 @@ export default function Operations() {
   return (
     <main className="min-h-[100dvh] bg-[#f8f9fa] px-4 py-6 text-foreground sm:px-6">
       <div className="mx-auto max-w-5xl">
+        
+        {/* BANNER OFFLINE / SYNCING */}
+        {(!isOnline || pendingSyncCount > 0) && (
+          <div className={`mb-4 rounded-xl p-3 flex items-center justify-between text-sm font-bold shadow-sm border ${!isOnline ? 'bg-red-50 border-red-200 text-red-700' : 'bg-amber-50 border-amber-200 text-amber-700'}`}>
+            <div className="flex items-center gap-2">
+              {!isOnline ? <WifiOff className="h-5 w-5" /> : <RefreshCw className={`h-5 w-5 ${isSyncing ? 'animate-spin' : ''}`} />}
+              {!isOnline ? "Anda Offline. Data disimpan di HP." : isSyncing ? "Menyinkronkan data..." : `Ada ${pendingSyncCount} data belum terkirim.`}
+            </div>
+            {isOnline && pendingSyncCount > 0 && !isSyncing && (
+              <button onClick={processQueue} className="bg-amber-200 px-3 py-1 rounded-lg text-amber-800 text-xs">Kirim Sekarang</button>
+            )}
+          </div>
+        )}
+
         <header className="mb-6 flex flex-col gap-4 pb-2 sm:flex-row sm:items-end sm:justify-between">
           <div>
             <Link href="/" className="mb-3 inline-flex items-center gap-1.5 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors">
@@ -357,7 +496,6 @@ export default function Operations() {
                 <Form {...visitCartForm}>
                   <form onSubmit={onAddToCart} className="space-y-4">
                     
-                    {/* SEARCHABLE DROPDOWN KUNJUNGAN */}
                     <div className="relative">
                       <label className="mb-2 block text-sm font-bold text-gray-700">Cari / Scan Produk</label>
                       <div className="flex gap-2">
@@ -386,18 +524,13 @@ export default function Operations() {
                         </button>
                       </div>
 
-                      {/* DROPDOWN LIST KUNJUNGAN */}
                       {isVisitDropdownOpen && (
                         <div className="absolute z-50 w-full mt-1 bg-white border border-gray-200 rounded-xl shadow-xl max-h-60 overflow-y-auto">
                           {filteredVisitProducts.length === 0 ? (
                             <div className="p-4 text-sm text-center text-gray-500">Produk tidak ditemukan.</div>
                           ) : (
                             filteredVisitProducts.map((p) => (
-                              <div
-                                key={p.barcode}
-                                onClick={() => handleSelectVisitProduct(p)}
-                                className="p-3 text-sm hover:bg-gray-50 cursor-pointer border-b border-gray-100 last:border-0"
-                              >
+                              <div key={p.barcode} onClick={() => handleSelectVisitProduct(p)} className="p-3 text-sm hover:bg-gray-50 cursor-pointer border-b border-gray-100 last:border-0">
                                 <p className="font-bold text-gray-900">{p.name}</p>
                                 <p className="text-xs text-gray-500 font-mono mt-0.5">{p.barcode}</p>
                               </div>
@@ -421,13 +554,8 @@ export default function Operations() {
                           <FormControl>
                             <input 
                               {...field} 
-                              ref={(e) => {
-                                field.ref(e); // Hubungkan ref react-hook-form
-                                qtyInputRef.current = e; // Simpan ref buat auto-focus
-                              }}
-                              type="number" 
-                              inputMode="numeric" 
-                              placeholder="0" 
+                              ref={(e) => { field.ref(e); qtyInputRef.current = e; }}
+                              type="number" inputMode="numeric" placeholder="0" 
                               className="h-12 w-full rounded-xl border-2 border-primary/40 bg-blue-50/30 px-3 text-center text-xl font-bold text-primary focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all placeholder:text-primary/30" 
                             />
                           </FormControl>
@@ -499,7 +627,7 @@ export default function Operations() {
                     )}
                     <button type="submit" disabled={createVisit.isPending || cart.length === 0} className="group inline-flex h-14 w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 text-base font-bold text-white shadow-lg shadow-primary/30 transition-all hover:bg-primary/90 disabled:opacity-50 disabled:shadow-none active:scale-[0.98]">
                       <CheckCircle2 className="h-6 w-6 transition-transform group-hover:scale-110" />
-                      {createVisit.isPending ? "Mengunci..." : "Kunci & Simpan Kunjungan"}
+                      {createVisit.isPending ? "Mengunci..." : isOnline ? "Kunci & Simpan Kunjungan" : "Simpan (Offline)"}
                     </button>
                   </form>
                 </Form>
@@ -552,7 +680,6 @@ export default function Operations() {
               <Form {...restockForm}>
                 <form onSubmit={onSaveRestock} className="space-y-4">
                   
-                  {/* SEARCHABLE DROPDOWN RESTOCK */}
                   <div className="relative">
                     <label className="mb-2 block text-sm font-bold text-gray-700">Cari / Scan Produk</label>
                     <div className="flex gap-2">
@@ -581,18 +708,13 @@ export default function Operations() {
                       </button>
                     </div>
 
-                    {/* DROPDOWN LIST RESTOCK */}
                     {isRestockDropdownOpen && (
                       <div className="absolute z-50 w-full mt-1 bg-white border border-gray-200 rounded-xl shadow-xl max-h-60 overflow-y-auto">
                         {filteredRestockProducts.length === 0 ? (
                           <div className="p-4 text-sm text-center text-gray-500">Produk tidak ditemukan.</div>
                         ) : (
                           filteredRestockProducts.map((p) => (
-                            <div
-                              key={p.barcode}
-                              onClick={() => handleSelectRestockProduct(p)}
-                              className="p-3 text-sm hover:bg-gray-50 cursor-pointer border-b border-gray-100 last:border-0"
-                            >
+                            <div key={p.barcode} onClick={() => handleSelectRestockProduct(p)} className="p-3 text-sm hover:bg-gray-50 cursor-pointer border-b border-gray-100 last:border-0">
                               <p className="font-bold text-gray-900">{p.name}</p>
                               <p className="text-xs text-gray-500 font-mono mt-0.5">{p.barcode}</p>
                             </div>
@@ -614,7 +736,10 @@ export default function Operations() {
                   <FormField control={restockForm.control} name="note" render={({ field }) => (
                       <FormItem><FormLabel className="text-sm font-bold text-gray-700">Catatan (Opsional)</FormLabel><FormControl><textarea {...field} rows={2} maxLength={500} placeholder="Contoh: pengiriman pagi" className="w-full resize-y rounded-xl border border-gray-300 bg-gray-50 px-3 py-2 text-sm font-medium focus:border-primary outline-none" /></FormControl><FormMessage /></FormItem>
                   )} />
-                  <button type="submit" disabled={createRestock.isPending || !activeStore} className="inline-flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 text-sm font-bold text-white shadow-md hover:opacity-90 active:scale-[0.98] transition-all disabled:opacity-50"><PackagePlus className="h-5 w-5" />{createRestock.isPending ? "Menyimpan..." : "Simpan Barang Masuk"}</button>
+                  <button type="submit" disabled={createRestock.isPending || !activeStore} className="inline-flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 text-sm font-bold text-white shadow-md hover:opacity-90 active:scale-[0.98] transition-all disabled:opacity-50">
+                    <PackagePlus className="h-5 w-5" />
+                    {createRestock.isPending ? "Menyimpan..." : isOnline ? "Simpan Barang Masuk" : "Simpan (Offline)"}
+                  </button>
                 </form>
               </Form>
             </section>
