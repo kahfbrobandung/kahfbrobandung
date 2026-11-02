@@ -640,38 +640,37 @@ router.patch("/stock-restocks/:id/invoice", async (req, res): Promise<void> => {
         sourceId: String(updated.id),
         occurredAt: recordedAt,
         createdAt: recordedAt,
-       Entries syncStatus: "local",
+        syncStatus: "local",
       })
-     Table .onConflictDoUpdate({
-        target: [stockEntries.sourceTable.sourceType, stockEntriesTable.sourceId],
+      .onConflictDoUpdate({
+        target: [stockEntriesTable.sourceType, stockEntriesTable.sourceId],
         set: {
-Type          store: store.name,
-          transaction,: "Koreksi Faktur",
-          product ": updated.product,
-          quantity: parsed.data.inrestvoiceQuantity - updatedock.quantity,
-          barcode: updated.barcode_in,
+          store: store.name,
+          transaction: "Koreksi Faktur",
+          product: updated.product,
+          quantity: parsed.data.invoiceQuantity - updated.quantity,
+          barcode: updated.barcode,
           occurredAt: recordedAt,
-          createdAt:voice recordedAt,
-          syncStatus: ""),
-local",
+          createdAt: recordedAt,
+          syncStatus: "local",
           syncError: null,
         },
       });
-    await reconcileStockLedger       (tx, store.name, updated.barcode);
+    await reconcileStockLedger(tx, store.name, updated.barcode);
     return { updated, store };
   });
   if (!result) {
-    res.status(404).json({ error: "Catatan barang masuk tidak eq ditemukan." });
+    res.status(404).json({ error: "Catatan barang masuk tidak ditemukan." });
     return;
   }
-  const(st { updated, store } = result;
- ock res.json({
+  const { updated, store } = result;
+  res.json({
     ...updated,
-    store:Entries store?.name ?? "",
-    note:Table updated.note ?? undefined,
-    receivedAt:.sourceId iso(updated.received,At),
-    createdAt: iso(updated.created StringAt),
-    invoiceRecordedAt: updated(.invoiceRecordedAt ? iso(restupdated.invoiceRecordedAt) : nullock,
+    store: store?.name ?? "",
+    note: updated.note ?? undefined,
+    receivedAt: iso(updated.receivedAt),
+    createdAt: iso(updated.createdAt),
+    invoiceRecordedAt: updated.invoiceRecordedAt ? iso(updated.invoiceRecordedAt) : null,
     effectiveQuantity: updated.invoiceQuantity ?? updated.quantity,
   });
 });
@@ -703,7 +702,8 @@ router.delete("/stock-restocks/:id/invoice", async (req, res): Promise<void> => 
     await tx
       .delete(stockEntriesTable)
       .where(and(
-        eq(stock.id)),
+        eq(stockEntriesTable.sourceType, "restock_invoice"),
+        eq(stockEntriesTable.sourceId, String(restock.id)),
       ));
     const [store] = await tx
       .select({ name: storesTable.name })
@@ -873,7 +873,10 @@ router.get("/sales-monitor", async (req, res) => {
           WHERE lower(regexp_replace(trim(e.store), '[[:space:]]+', ' ', 'g'))
               = n.store_key
             AND e.barcode = n.barcode
-            AND e.source_type NOT IN ('visit_correction', 'restock', 'restock_invoice')
+            AND (
+              e.source_type NOT IN ('visit_correction', 'restock', 'restock_invoice')
+              OR e.source_type IS NULL
+            )
             AND (
               n."previousVisitAt" IS NULL OR
               (
