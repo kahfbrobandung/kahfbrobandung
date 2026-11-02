@@ -26,33 +26,14 @@ import { useStoreName } from "@/hooks/useStoreName";
 import { useToast } from "@/hooks/use-toast";
 import { BarcodeScanner } from "@/components/BarcodeScanner";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
-import { ArrowLeft, Boxes, Camera, ClipboardCheck, PackagePlus, Plus, Trash2, Search } from "lucide-react";
+import { ArrowLeft, Boxes, Camera, ClipboardCheck, PackagePlus, Plus, Trash2, ShoppingCart, CheckCircle2 } from "lucide-react";
 
-const integerText = z
-  .string()
-  .refine((value) => value === "" || /^\d+$/.test(value), "Masukkan bilangan bulat nol atau lebih.");
-
-const lineFormSchema = z
-  .object({
-    barcode: z.string().trim().min(1, "Masukkan kode produk atau pilih produk tersimpan."),
-    product: z.string().trim().min(1, "Nama produk wajib diisi."),
-    displayQuantity: integerText,
-    secondaryDisplayQuantity: integerText,
-    warehouseQuantity: integerText,
-  })
-  .superRefine((line, context) => {
-    if (
-      line.displayQuantity === "" &&
-      line.secondaryDisplayQuantity === "" &&
-      line.warehouseQuantity === ""
-    ) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["displayQuantity"],
-        message: "Isi minimal satu jumlah, termasuk 0 bila stok memang kosong.",
-      });
-    }
-  });
+// Skema disederhanakan: Hanya butuh Barcode, Nama, dan Total Qty
+const visitCartItemSchema = z.object({
+  barcode: z.string().trim().min(1, "Barcode wajib diisi."),
+  product: z.string().trim().min(1, "Nama produk wajib diisi."),
+  quantity: z.string().regex(/^[1-9]\d*$/, "Jumlah minimal 1."),
+});
 
 const visitFormSchema = z.object({
   visitedAt: z.string().min(1, "Tanggal kunjungan wajib diisi."),
@@ -66,11 +47,11 @@ const restockFormSchema = z.object({
   note: z.string().max(500, "Catatan maksimal 500 karakter."),
 });
 
-type LineFormValues = z.infer<typeof lineFormSchema>;
+type VisitCartItemValues = z.infer<typeof visitCartItemSchema>;
 type VisitFormValues = z.infer<typeof visitFormSchema>;
 type RestockFormValues = z.infer<typeof restockFormSchema>;
 
-type DraftQty = { display: string; secondary: string; warehouse: string };
+type CartItem = { barcode: string; product: string; quantity: number };
 
 function localDateTime() {
   const now = new Date();
@@ -95,18 +76,14 @@ export default function Operations() {
   const activeStore = storeName.trim();
   const [activeTab, setActiveTab] = useState<"visit" | "restock">("visit");
   const [scannerTarget, setScannerTarget] = useState<"visit" | "restock" | null>(null);
+  
   const [visitProductSelection, setVisitProductSelection] = useState("");
   const [restockProductSelection, setRestockProductSelection] = useState("");
   
-  // State for direct table input
-  const [draftQuantities, setDraftQuantities] = useState<Record<string, DraftQty>>({});
-  const [visitSearch, setVisitSearch] = useState("");
-  const [showNewProductForm, setShowNewProductForm] = useState(false);
+  const [cart, setCart] = useState<CartItem[]>([]);
   const [customProducts, setCustomProducts] = useState<{barcode: string, name: string}[]>([]);
 
   const [restockSearch, setRestockSearch] = useState("");
-  
-  // STATE UNTUK PAGINATION
   const [visitDisplayLimit, setVisitDisplayLimit] = useState(5);
   const [restockDisplayLimit, setRestockDisplayLimit] = useState(5);
 
@@ -121,72 +98,39 @@ export default function Operations() {
   
   const visitParams = { store: activeStore || undefined, limit: 50 }; 
   const visitHistoryQuery = useListStockVisits(visitParams, {
-    query: {
-      queryKey: getListStockVisitsQueryKey(visitParams),
-      enabled: true,
-      staleTime: 0,
-      refetchOnMount: "always",
-    },
+    query: { queryKey: getListStockVisitsQueryKey(visitParams), enabled: true, staleTime: 0, refetchOnMount: "always" },
   });
   
   const restockParams = { store: activeStore || undefined, limit: 500 };
   const restockHistoryQuery = useListStockRestocks(restockParams, {
-    query: {
-      queryKey: getListStockRestocksQueryKey(restockParams),
-      enabled: true,
-      staleTime: 0,
-      refetchOnMount: "always",
-    },
+    query: { queryKey: getListStockRestocksQueryKey(restockParams), enabled: true, staleTime: 0, refetchOnMount: "always" },
   });
 
-  // Gabungkan produk dari DB, riwayat, dan input manual baru
   const allProductOptions = useMemo(() => {
     const byBarcode = new Map<string, { barcode: string; name: string }>();
     for (const visit of visitHistoryQuery.data ?? []) {
       for (const line of visit.lines ?? []) {
-        if (!byBarcode.has(line.barcode)) {
-          byBarcode.set(line.barcode, { barcode: line.barcode, name: line.product });
-        }
+        if (!byBarcode.has(line.barcode)) byBarcode.set(line.barcode, { barcode: line.barcode, name: line.product });
       }
     }
     for (const entry of restockHistoryQuery.data ?? []) {
-      if (!byBarcode.has(entry.barcode)) {
-        byBarcode.set(entry.barcode, { barcode: entry.barcode, name: entry.product });
-      }
+      if (!byBarcode.has(entry.barcode)) byBarcode.set(entry.barcode, { barcode: entry.barcode, name: entry.product });
     }
-    for (const product of products) {
-      byBarcode.set(product.barcode, { barcode: product.barcode, name: product.name });
-    }
-    for (const cp of customProducts) {
-      byBarcode.set(cp.barcode, cp);
-    }
+    for (const product of products) byBarcode.set(product.barcode, { barcode: product.barcode, name: product.name });
+    for (const cp of customProducts) byBarcode.set(cp.barcode, cp);
     return [...byBarcode.values()].sort((a, b) => a.name.localeCompare(b.name, "id"));
   }, [products, restockHistoryQuery.data, visitHistoryQuery.data, customProducts]);
-
-  const filteredVisitProducts = useMemo(() => {
-    const q = visitSearch.toLowerCase();
-    return allProductOptions.filter(p => p.name.toLowerCase().includes(q) || p.barcode.includes(q));
-  }, [allProductOptions, visitSearch]);
 
   const visibleRestocks = useMemo(() => {
     const query = restockSearch.trim().toLocaleLowerCase("id-ID");
     const rows = restockHistoryQuery.data ?? [];
     if (!query) return rows;
-    return rows.filter((entry) =>
-      [entry.product, entry.barcode, entry.store]
-        .some((value) => value.toLocaleLowerCase("id-ID").includes(query)),
-    );
+    return rows.filter((entry) => [entry.product, entry.barcode, entry.store].some((value) => value.toLocaleLowerCase("id-ID").includes(query)));
   }, [restockHistoryQuery.data, restockSearch]);
 
-  const lineForm = useForm<LineFormValues>({
-    resolver: zodResolver(lineFormSchema),
-    defaultValues: {
-      barcode: "",
-      product: "",
-      displayQuantity: "",
-      secondaryDisplayQuantity: "",
-      warehouseQuantity: "",
-    },
+  const visitCartForm = useForm<VisitCartItemValues>({
+    resolver: zodResolver(visitCartItemSchema),
+    defaultValues: { barcode: "", product: "", quantity: "" },
   });
   
   const visitForm = useForm<VisitFormValues>({
@@ -204,8 +148,8 @@ export default function Operations() {
     const knownProduct = allProductOptions.find((product) => product.barcode === barcode);
     if (target === "visit") {
       setVisitProductSelection(knownProduct?.barcode ?? "");
-      lineForm.setValue("barcode", barcode, { shouldDirty: true, shouldValidate: true });
-      lineForm.setValue("product", knownProduct?.name ?? "", { shouldDirty: true, shouldValidate: true });
+      visitCartForm.setValue("barcode", barcode, { shouldDirty: true, shouldValidate: true });
+      visitCartForm.setValue("product", knownProduct?.name ?? "", { shouldDirty: true, shouldValidate: true });
     } else {
       setRestockProductSelection(knownProduct?.barcode ?? "");
       restockForm.setValue("barcode", barcode, { shouldDirty: true, shouldValidate: true });
@@ -219,10 +163,8 @@ export default function Operations() {
     const product = setScannedBarcode(scannerTarget, code);
     setScannerTarget(null);
     toast({
-      title: product ? "Barcode ditemukan" : "Barcode berhasil dibaca",
-      description: product
-        ? `Produk: ${product.name}`
-        : `${code}. Isi nama produk untuk melanjutkan.`,
+      title: product ? "Barcode ditemukan" : "Barcode dibaca",
+      description: product ? `Produk: ${product.name}` : `${code}. Isi nama produk.`,
     });
   };
 
@@ -235,39 +177,28 @@ export default function Operations() {
     queryClient.invalidateQueries({ queryKey: getGetSalesActivityQueryKey() });
   };
 
-  // Fungsi untuk update angka langsung dari tabel
-  const handleDraftChange = (barcode: string, field: keyof DraftQty, value: string) => {
-    if (value !== "" && !/^\d+$/.test(value)) return; // cuma boleh angka
-    setDraftQuantities(prev => {
-      const existing = prev[barcode] || { display: "", secondary: "", warehouse: "" };
-      return { ...prev, [barcode]: { ...existing, [field]: value } };
-    });
-  };
-
-  // Fungsi tambah produk baru via form manual
-  const onAddNewProduct = lineForm.handleSubmit((values) => {
+  const onAddToCart = visitCartForm.handleSubmit((values) => {
     const barcode = values.barcode.trim();
     const productName = values.product.trim();
-    
-    // Tambah ke list custom
-    if (!allProductOptions.some(p => p.barcode === barcode)) {
-      setCustomProducts(prev => [...prev, { barcode, name: productName }]);
-    }
-    
-    // Langsung isi draft quantity-nya
-    setDraftQuantities(prev => ({
-      ...prev,
-      [barcode]: {
-        display: values.displayQuantity,
-        secondary: values.secondaryDisplayQuantity,
-        warehouse: values.warehouseQuantity,
-      }
-    }));
+    const qty = Number(values.quantity);
 
-    setVisitProductSelection("");
-    lineForm.reset();
-    setShowNewProductForm(false); // Sembunyikan form lagi
-    toast({ title: "Produk ditambahkan", description: `${productName} siap diisi angkanya.` });
+    setCart((prev) => {
+      const existingIndex = prev.findIndex((item) => item.barcode === barcode);
+      if (existingIndex >= 0) {
+        const newCart = [...prev];
+        newCart[existingIndex] = { ...newCart[existingIndex], quantity: newCart[existingIndex].quantity + qty };
+        return newCart;
+      } else {
+        return [...prev, { barcode, product: productName, quantity: qty }];
+      }
+    });
+
+    visitCartForm.setValue("quantity", "");
+    visitProductSelection("");
+    // Fokus balik ke input scan/pilih produk (opsional, biar cepet)
+    visitCartForm.setFocus("barcode");
+    
+    toast({ title: "Masuk Keranjang", description: `+${qty} unit ${productName}` });
   });
 
   const createVisit = useCreateStockVisit();
@@ -277,648 +208,345 @@ export default function Operations() {
 
   const onSaveVisit = visitForm.handleSubmit((values) => {
     if (!activeStore) {
-      toast({
-        title: "Nama toko wajib diisi",
-        description: "Masukkan nama toko sebelum menyimpan kunjungan.",
-        variant: "destructive",
-      });
+      toast({ title: "Pilih toko dulu", description: "Nama toko wajib diisi.", variant: "destructive" });
+      return;
+    }
+    if (cart.length === 0) {
+      visitForm.setError("root", { message: "Keranjang kosong. Input barang dulu." });
       return;
     }
 
-    // Convert draftQuantities ke format lines
-    const lines: StocktakeLineInput[] = [];
-    for (const [barcode, qty] of Object.entries(draftQuantities)) {
-      if (qty.display === "" && qty.secondary === "" && qty.warehouse === "") continue;
-      const product = allProductOptions.find(p => p.barcode === barcode);
-      if (product) {
-        lines.push({
-          barcode,
-          product: product.name,
-          displayQuantity: Number(qty.display || 0),
-          secondaryDisplayQuantity: Number(qty.secondary || 0),
-          warehouseQuantity: Number(qty.warehouse || 0),
-        });
-      }
-    }
-
-    if (lines.length === 0) {
-      visitForm.setError("root", { message: "Isi minimal satu angka pada daftar produk." });
-      return;
-    }
+    const lines: StocktakeLineInput[] = cart.map((item) => ({
+      barcode: item.barcode,
+      product: item.product,
+      displayQuantity: item.quantity,
+      secondaryDisplayQuantity: 0,
+      warehouseQuantity: 0,
+    }));
 
     visitClientId.current ??= crypto.randomUUID();
     createVisit.mutate(
-      {
-        data: {
-          clientId: visitClientId.current,
-          store: activeStore,
-          visitedAt: new Date(values.visitedAt).toISOString(),
-          lines,
-        },
-      },
+      { data: { clientId: visitClientId.current, store: activeStore, visitedAt: new Date(values.visitedAt).toISOString(), lines } },
       {
         onSuccess: (visit) => {
           visitClientId.current = null;
-          setDraftQuantities({}); // Reset tabel
+          setCart([]);
           visitForm.reset({ visitedAt: localDateTime() });
           refreshAffectedData();
-          toast({
-            title: "Kunjungan tersimpan",
-            description: `${visit.lines?.length ?? lines.length} SKU tersimpan untuk ${visit.store}.`,
-          });
+          toast({ title: "Stok Dikunci!", description: `${visit.lines?.length ?? lines.length} SKU tersimpan.` });
         },
-        onError: (error) => {
-          toast({
-            title: "Kunjungan belum tersimpan",
-            description: error.message || "Periksa koneksi lalu coba lagi.",
-            variant: "destructive",
-          });
-        },
-      },
+        onError: (error) => toast({ title: "Gagal menyimpan", description: error.message, variant: "destructive" }),
+      }
     );
   });
 
   const onSaveRestock = restockForm.handleSubmit((values) => {
     if (!activeStore) {
-      toast({
-        title: "Nama toko wajib diisi",
-        description: "Masukkan nama toko sebelum mencatat barang masuk.",
-        variant: "destructive",
-      });
+      toast({ title: "Pilih toko dulu", description: "Nama toko wajib diisi.", variant: "destructive" });
       return;
     }
     restockClientId.current ??= crypto.randomUUID();
     createRestock.mutate(
-      {
-        data: {
-          clientId: restockClientId.current,
-          store: activeStore,
-          product: values.product.trim(),
-          barcode: values.barcode.trim(),
-          quantity: Number(values.quantity),
-          receivedAt: new Date(values.receivedAt).toISOString(),
-          ...(values.note.trim() ? { note: values.note.trim() } : {}),
-        },
-      },
+      { data: { clientId: restockClientId.current, store: activeStore, product: values.product.trim(), barcode: values.barcode.trim(), quantity: Number(values.quantity), receivedAt: new Date(values.receivedAt).toISOString(), ...(values.note.trim() ? { note: values.note.trim() } : {}) } },
       {
         onSuccess: (entry) => {
           restockClientId.current = null;
           setRestockProductSelection("");
           restockForm.reset({ barcode: "", product: "", quantity: "", receivedAt: localDateTime(), note: "" });
           refreshAffectedData();
-          toast({
-            title: "Barang masuk tersimpan",
-            description: `${entry.quantity} unit ${entry.product} dicatat untuk ${entry.store}.`,
-          });
+          toast({ title: "Barang masuk tersimpan", description: `+${entry.quantity} unit ${entry.product}` });
         },
-        onError: (error) => {
-          toast({
-            title: "Barang masuk belum tersimpan",
-            description: error.message || "Periksa koneksi lalu coba lagi.",
-            variant: "destructive",
-          });
-        },
-      },
+        onError: (error) => toast({ title: "Gagal menyimpan", description: error.message, variant: "destructive" }),
+      }
     );
   });
 
   const onDeleteVisit = (id: number) => {
-    if (!window.confirm("Hapus kunjungan stok ini? Perhitungan penjualan interval terkait akan diperbarui.")) return;
+    if (!window.confirm("Hapus kunjungan stok ini?")) return;
     deleteVisit.mutate({ id }, {
-      onSuccess: () => {
-        refreshAffectedData();
-        toast({ title: "Kunjungan dihapus", description: "Saldo dan perhitungan penjualan diperbarui." });
-      },
-      onError: (error) => toast({ title: "Kunjungan belum dihapus", description: error.message || "Coba lagi.", variant: "destructive" }),
+      onSuccess: () => { refreshAffectedData(); toast({ title: "Kunjungan dihapus" }); },
+      onError: (error) => toast({ title: "Gagal menghapus", description: error.message, variant: "destructive" }),
     });
   };
 
   const onDeleteRestock = (entry: StockRestock) => {
-    if (!window.confirm(`Hapus penerimaan ${entry.quantity} unit ${entry.product}? Saldo dan laporan akan dihitung ulang.`)) return;
+    if (!window.confirm(`Hapus penerimaan ${entry.quantity} unit ${entry.product}?`)) return;
     deleteRestock.mutate({ id: entry.id }, {
-      onSuccess: () => {
-        refreshAffectedData();
-        toast({ title: "Barang masuk dihapus", description: "Saldo dan perhitungan penjualan diperbarui." });
-      },
-      onError: (error) => toast({ title: "Barang masuk belum dihapus", description: error.message || "Coba lagi.", variant: "destructive" }),
+      onSuccess: () => { refreshAffectedData(); toast({ title: "Barang masuk dihapus" }); },
+      onError: (error) => toast({ title: "Gagal menghapus", description: error.message, variant: "destructive" }),
     });
   };
 
   return (
-    <main className="min-h-[100dvh] bg-background px-4 py-6 text-foreground sm:px-6">
+    <main className="min-h-[100dvh] bg-[#f8f9fa] px-4 py-6 text-foreground sm:px-6">
       <div className="mx-auto max-w-5xl">
-        <header className="mb-6 flex flex-col gap-4 border-b border-border pb-5 sm:flex-row sm:items-end sm:justify-between">
+        <header className="mb-6 flex flex-col gap-4 pb-2 sm:flex-row sm:items-end sm:justify-between">
           <div>
-            <Link href="/" className="mb-3 inline-flex items-center gap-1.5 text-sm font-medium text-muted-foreground hover:text-foreground" data-testid="link-back-stock">
-              <ArrowLeft className="h-4 w-4" /> Input stok
+            <Link href="/" className="mb-3 inline-flex items-center gap-1.5 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors">
+              <ArrowLeft className="h-4 w-4" /> Kembali
             </Link>
-            <h1 className="font-serif text-3xl font-bold tracking-tight">Kunjungan & barang masuk</h1>
+            <h1 className="font-serif text-3xl font-bold tracking-tight text-gray-900">Operasional</h1>
           </div>
           
-          <button
-            type="button"
-            onClick={() => setLocation("/dashboard")}
-            className="inline-flex h-10 items-center justify-center rounded-lg border border-border bg-card px-4 text-sm font-semibold hover:bg-muted transition-colors"
-            data-testid="link-sales-dashboard"
-          >
-            Penjualan harian
+          <button type="button" onClick={() => setLocation("/dashboard")} className="inline-flex h-10 items-center justify-center rounded-lg border border-gray-200 bg-white px-4 text-sm font-semibold shadow-sm hover:bg-gray-50 transition-colors">
+            Lihat Penjualan
           </button>
         </header>
 
-        <section className="mb-5 rounded-2xl border border-border bg-card p-5">
-          <label htmlFor="active-store" className="mb-2 flex items-center gap-2 text-sm font-semibold">
-            <Boxes className="h-4 w-4 text-primary" /> Toko aktif
+        <section className="mb-6 rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
+          <label htmlFor="active-store" className="mb-2 flex items-center gap-2 text-sm font-bold text-gray-800">
+            <Boxes className="h-4 w-4 text-primary" /> Toko Aktif
           </label>
-          <input
-            id="active-store"
-            list="known-stores"
-            value={storeName}
-            onChange={(event) => setStoreName(event.target.value)}
-            placeholder="Contoh: Toko Sentosa"
-            required
-            className="h-11 w-full rounded-xl border border-input bg-background px-3 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
-            data-testid="input-active-store"
-          />
+          <input id="active-store" list="known-stores" value={storeName} onChange={(event) => setStoreName(event.target.value)} placeholder="Ketik nama toko..." required className="h-12 w-full rounded-xl border border-gray-300 bg-gray-50 px-4 text-base font-medium outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all" />
           <datalist id="known-stores">
             {(storesQuery.data ?? []).map((store) => <option key={store.name} value={store.name} />)}
           </datalist>
         </section>
 
-        <div className="mb-5 grid grid-cols-2 gap-2 rounded-xl bg-muted p-1" role="tablist" aria-label="Jenis pencatatan">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeTab === "visit"}
-            onClick={() => setActiveTab("visit")}
-            className={`inline-flex h-10 items-center justify-center gap-2 rounded-lg px-3 text-sm font-semibold transition ${activeTab === "visit" ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
-            data-testid="tab-stock-visit"
-          >
+        <div className="mb-6 grid grid-cols-2 gap-2 rounded-xl bg-gray-200/60 p-1.5">
+          <button type="button" onClick={() => setActiveTab("visit")} className={`inline-flex h-11 items-center justify-center gap-2 rounded-lg px-3 text-sm font-bold transition-all duration-200 ${activeTab === "visit" ? "bg-white text-primary shadow-sm" : "text-gray-500 hover:text-gray-800"}`}>
             <ClipboardCheck className="h-4 w-4" /> Kunjungan SO
           </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeTab === "restock"}
-            onClick={() => setActiveTab("restock")}
-            className={`inline-flex h-10 items-center justify-center gap-2 rounded-lg px-3 text-sm font-semibold transition ${activeTab === "restock" ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
-            data-testid="tab-stock-restock"
-          >
-            <PackagePlus className="h-4 w-4" /> Barang masuk
+          <button type="button" onClick={() => setActiveTab("restock")} className={`inline-flex h-11 items-center justify-center gap-2 rounded-lg px-3 text-sm font-bold transition-all duration-200 ${activeTab === "restock" ? "bg-white text-primary shadow-sm" : "text-gray-500 hover:text-gray-800"}`}>
+            <PackagePlus className="h-4 w-4" /> Barang Masuk
           </button>
         </div>
 
         {activeTab === "visit" ? (
-          <div className="grid gap-5 lg:grid-cols-[1fr_0.9fr]">
-            <section className="rounded-2xl border border-border bg-card p-5">
+          <div className="grid gap-6 lg:grid-cols-[1fr_0.9fr]">
+            <section className="flex flex-col gap-6">
               
-              <div className="mb-4 flex items-center justify-between">
-                <div>
-                  <h2 className="font-serif text-xl font-bold">Hitung Fisik</h2>
-                  <p className="mt-1 text-sm text-muted-foreground">Isi angka langsung di tabel. Kosongkan jika 0.</p>
-                </div>
-                <button 
-                  type="button"
-                  onClick={() => setShowNewProductForm(!showNewProductForm)}
-                  className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-primary/30 bg-primary/5 px-3 text-xs font-semibold text-primary"
-                >
-                  <Plus className="h-4 w-4" /> Produk Baru
-                </button>
-              </div>
-
-              {/* FORM PRODUK BARU (Sembunyi default) */}
-              {showNewProductForm && (
-                <div className="mb-5 rounded-xl border border-border bg-muted/30 p-4">
-                  <Form {...lineForm}>
-                    <form onSubmit={onAddNewProduct} className="space-y-3">
-                       <FormField control={lineForm.control} name="barcode" render={({ field }) => (
-                          <FormItem>
-                            <FormLabel className="text-xs">Barcode / Kode</FormLabel>
-                            <FormControl>
-                              <div className="flex gap-2">
-                                <input {...field} placeholder="Scan / ketik kode" className="h-9 min-w-0 flex-1 rounded-md border border-input bg-background px-2 text-sm" />
-                                <button type="button" onClick={() => setScannerTarget("visit")} className="inline-flex h-9 items-center gap-1 rounded-md border border-border bg-card px-2 text-xs font-semibold">
-                                  <Camera className="h-3.5 w-3.5" /> Scan
-                                </button>
-                              </div>
-                            </FormControl>
-                            <FormMessage />
-                          </FormItem>
-                        )} />
-                        <FormField control={lineForm.control} name="product" render={({ field }) => (
-                          <FormItem>
-                            <FormLabel className="text-xs">Nama Produk</FormLabel>
-                            <FormControl>
-                              <input {...field} placeholder="Nama Produk" className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm" />
-                            </FormControl>
-                            <FormMessage />
-                          </FormItem>
-                        )} />
-                        <div className="grid grid-cols-3 gap-2">
-                          {(["displayQuantity", "secondaryDisplayQuantity", "warehouseQuantity"] as const).map((name, i) => (
-                            <FormField key={name} control={lineForm.control} name={name} render={({ field }) => (
-                              <FormItem>
-                                <FormLabel className="text-[10px] uppercase">{["Display", "Secondary", "Gudang"][i]}</FormLabel>
-                                <FormControl>
-                                  <input {...field} type="number" inputMode="numeric" placeholder="0" className="h-9 w-full rounded-md border border-input bg-background text-center text-sm font-semibold" />
-                                </FormControl>
-                              </FormItem>
-                            )} />
+              {/* FORM INPUT SCAN */}
+              <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
+                <h2 className="font-serif text-xl font-bold text-gray-900 mb-4">Scan & Hitung</h2>
+                <Form {...visitCartForm}>
+                  <form onSubmit={onAddToCart} className="space-y-4">
+                    <div>
+                      <label className="mb-2 block text-sm font-bold text-gray-700">Pilih Produk / Scan</label>
+                      <div className="flex gap-2">
+                        <select
+                          value={visitProductSelection}
+                          onChange={(event) => {
+                            const product = allProductOptions.find((item) => item.barcode === event.target.value);
+                            setVisitProductSelection(product?.barcode ?? "");
+                            if (product) {
+                              visitCartForm.setValue("barcode", product.barcode, { shouldValidate: true });
+                              visitCartForm.setValue("product", product.name, { shouldValidate: true });
+                            }
+                          }}
+                          className="h-12 min-w-0 flex-1 rounded-xl border border-gray-300 bg-gray-50 px-3 text-sm font-medium focus:border-primary focus:ring-1 focus:ring-primary outline-none"
+                        >
+                          <option value="">-- Cari Produk --</option>
+                          {allProductOptions.map((product) => (
+                            <option key={product.barcode} value={product.barcode}>{product.name}</option>
                           ))}
-                        </div>
-                        <div className="flex gap-2 pt-1">
-                          <button type="submit" className="flex-1 rounded-md bg-primary py-1.5 text-xs font-semibold text-primary-foreground">Tambahkan</button>
-                          <button type="button" onClick={() => setShowNewProductForm(false)} className="flex-1 rounded-md border border-border bg-card py-1.5 text-xs font-semibold">Batal</button>
-                        </div>
-                    </form>
-                  </Form>
-                </div>
-              )}
+                        </select>
+                        <button type="button" onClick={() => setScannerTarget("visit")} className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-primary text-white shadow-sm hover:opacity-90 transition-opacity">
+                          <Camera className="h-5 w-5" />
+                        </button>
+                      </div>
+                    </div>
 
-              {/* SEARCH BAR */}
-              <div className="relative mb-3">
-                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                <input 
-                  type="search" 
-                  placeholder="Cari produk..." 
-                  value={visitSearch}
-                  onChange={e => setVisitSearch(e.target.value)}
-                  className="h-10 w-full rounded-lg border border-input bg-background pl-9 pr-3 text-sm" 
-                />
+                    <div className="grid grid-cols-2 gap-3">
+                      <FormField control={visitCartForm.control} name="product" render={({ field }) => (
+                        <FormItem>
+                          <FormLabel className="text-xs font-semibold text-gray-500">Nama Produk</FormLabel>
+                          <FormControl><input {...field} readOnly placeholder="Auto" className="h-12 w-full rounded-xl border border-gray-200 bg-gray-100 px-3 text-sm font-medium text-gray-600" /></FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )} />
+                      <FormField control={visitCartForm.control} name="quantity" render={({ field }) => (
+                        <FormItem>
+                          <FormLabel className="text-xs font-bold text-primary">Jumlah Fisik</FormLabel>
+                          <FormControl><input {...field} type="number" inputMode="numeric" placeholder="0" className="h-12 w-full rounded-xl border-2 border-primary/40 bg-blue-50/30 px-3 text-center text-xl font-bold text-primary focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all placeholder:text-primary/30" /></FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )} />
+                    </div>
+
+                    <button type="submit" className="inline-flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-gray-900 px-4 text-sm font-bold text-white shadow-md hover:bg-gray-800 active:scale-[0.98] transition-all">
+                      <Plus className="h-5 w-5" /> Tambah ke Keranjang
+                    </button>
+                  </form>
+                </Form>
               </div>
 
-              {/* LIST TABLE */}
-              <div className="mb-5 max-h-[50vh] overflow-y-auto rounded-xl border border-border">
-                {filteredVisitProducts.length === 0 ? (
-                  <div className="p-5 text-center text-sm text-muted-foreground">Produk tidak ditemukan.</div>
-                ) : (
-                  <div className="divide-y divide-border">
-                    {filteredVisitProducts.map((p) => {
-                      const qty = draftQuantities[p.barcode] || { display: "", secondary: "", warehouse: "" };
-                      return (
-                        <div key={p.barcode} className="flex flex-col gap-2 p-3 hover:bg-muted/30">
-                          <div className="flex items-center justify-between">
-                            <span className="text-sm font-semibold">{p.name}</span>
-                            <span className="text-[10px] font-mono text-muted-foreground bg-muted px-1.5 py-0.5 rounded">{p.barcode}</span>
-                          </div>
-                          <div className="grid grid-cols-3 gap-2">
-                            <div>
-                              <label className="text-[10px] font-semibold text-muted-foreground uppercase">Display</label>
-                              <input
-                                type="number"
-                                inputMode="numeric"
-                                placeholder="0"
-                                value={qty.display}
-                                onChange={(e) => handleDraftChange(p.barcode, 'display', e.target.value)}
-                                className="h-10 w-full rounded-md border border-input bg-background text-center text-sm font-bold focus:border-primary focus:ring-1 focus:ring-primary"
-                              />
-                            </div>
-                            <div>
-                              <label className="text-[10px] font-semibold text-muted-foreground uppercase">Secondary</label>
-                              <input
-                                type="number"
-                                inputMode="numeric"
-                                placeholder="0"
-                                value={qty.secondary}
-                                onChange={(e) => handleDraftChange(p.barcode, 'secondary', e.target.value)}
-                                className="h-10 w-full rounded-md border border-input bg-background text-center text-sm font-bold focus:border-primary focus:ring-1 focus:ring-primary"
-                              />
-                            </div>
-                            <div>
-                              <label className="text-[10px] font-semibold text-muted-foreground uppercase">Gudang</label>
-                              <input
-                                type="number"
-                                inputMode="numeric"
-                                placeholder="0"
-                                value={qty.warehouse}
-                                onChange={(e) => handleDraftChange(p.barcode, 'warehouse', e.target.value)}
-                                className="h-10 w-full rounded-md border border-input bg-background text-center text-sm font-bold focus:border-primary focus:ring-1 focus:ring-primary"
-                              />
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
+              {/* KERANJANG */}
+              <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
+                <div className="mb-4 flex items-center justify-between border-b border-gray-100 pb-3">
+                  <h3 className="flex items-center gap-2 text-lg font-bold text-gray-900">
+                    <ShoppingCart className="h-5 w-5 text-primary" /> Keranjang
+                  </h3>
+                  <span className="rounded-full bg-primary/10 text-primary px-3 py-1 text-xs font-bold">{cart.length} SKU</span>
+                </div>
+
+                {cart.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center rounded-xl border-2 border-dashed border-gray-200 bg-gray-50 py-10">
+                    <ShoppingCart className="h-10 w-10 text-gray-300 mb-3" />
+                    <p className="text-sm font-medium text-gray-500">Belum ada barang dihitung.</p>
                   </div>
+                ) : (
+                  <ul className="space-y-3">
+                    {cart.map((item, index) => (
+                      <li key={item.barcode} className="flex items-center justify-between gap-3 rounded-xl border border-gray-200 p-3 hover:border-primary/30 transition-colors bg-white">
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-bold text-gray-900">{item.product}</p>
+                          <p className="mt-0.5 font-mono text-[11px] text-gray-500">{item.barcode}</p>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-3">
+                          <div className="flex flex-col items-center">
+                            <span className="text-[10px] uppercase font-bold text-gray-400">Qty</span>
+                            <span className="font-mono text-2xl font-black text-primary leading-none">{item.quantity}</span>
+                          </div>
+                          <button type="button" onClick={() => setCart((prev) => prev.filter((_, i) => i !== index))} className="rounded-lg p-2 text-gray-400 hover:bg-red-50 hover:text-red-500 transition-colors">
+                            <Trash2 className="h-5 w-5" />
+                          </button>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
                 )}
               </div>
 
-              <Form {...visitForm}>
-                <form onSubmit={onSaveVisit} className="border-t border-border pt-4">
-                  <FormField
-                    control={visitForm.control}
-                    name="visitedAt"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel className="text-xs">Waktu kunjungan</FormLabel>
-                        <FormControl>
-                          <input {...field} type="datetime-local" className="h-10 w-full rounded-lg border border-input bg-background px-3 text-sm" />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
+              {/* SIMPAN KUNJUNGAN */}
+              <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
+                <Form {...visitForm}>
+                  <form onSubmit={onSaveVisit}>
+                    <FormField control={visitForm.control} name="visitedAt" render={({ field }) => (
+                        <FormItem className="mb-4">
+                          <FormLabel className="text-sm font-bold text-gray-700">Waktu Kunjungan</FormLabel>
+                          <FormControl>
+                            <input {...field} type="datetime-local" className="h-12 w-full rounded-xl border border-gray-300 bg-gray-50 px-3 text-sm font-medium focus:border-primary focus:ring-1 focus:ring-primary outline-none" />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                    {visitForm.formState.errors.root?.message && (
+                      <p className="mb-3 text-sm font-bold text-red-500">{visitForm.formState.errors.root.message}</p>
                     )}
-                  />
-                  {visitForm.formState.errors.root?.message && (
-                    <p className="mt-2 text-sm text-destructive font-semibold" role="alert">{visitForm.formState.errors.root.message}</p>
-                  )}
-                  <button
-                    type="submit"
-                    disabled={createVisit.isPending}
-                    className="mt-4 inline-flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 text-sm font-semibold text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
-                  >
-                    <ClipboardCheck className="h-5 w-5" />
-                    {createVisit.isPending ? "Menyimpan..." : "Simpan Kunjungan SO"}
-                  </button>
-                </form>
-              </Form>
+                    <button type="submit" disabled={createVisit.isPending || cart.length === 0} className="group inline-flex h-14 w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 text-base font-bold text-white shadow-lg shadow-primary/30 transition-all hover:bg-primary/90 disabled:opacity-50 disabled:shadow-none active:scale-[0.98]">
+                      <CheckCircle2 className="h-6 w-6 transition-transform group-hover:scale-110" />
+                      {createVisit.isPending ? "Mengunci..." : "Kunci & Simpan Kunjungan"}
+                    </button>
+                  </form>
+                </Form>
+              </div>
+
             </section>
 
             {/* RIWAYAT KUNJUNGAN */}
-            <section className="rounded-2xl border border-border bg-card p-5">
-              <h2 className="font-serif text-xl font-bold">Kunjungan terakhir</h2>
-              <p className="mb-4 mt-1 text-sm text-muted-foreground">
-                {activeStore ? `Riwayat ${activeStore}` : "Pilih toko untuk membatasi daftar ini."}
-              </p>
+            <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm h-fit">
+              <h2 className="font-serif text-xl font-bold text-gray-900 border-b border-gray-100 pb-3 mb-4">Riwayat Kunjungan</h2>
+              <p className="mb-4 text-xs font-medium text-gray-500">{activeStore ? `Toko: ${activeStore}` : "Pilih toko terlebih dahulu."}</p>
+              
               {visitHistoryQuery.isLoading ? (
-                <div className="space-y-3 py-3" aria-label="Memuat kunjungan">
-                  <div className="h-16 animate-pulse rounded-xl bg-muted" />
-                  <div className="h-16 animate-pulse rounded-xl bg-muted" />
-                </div>
+                <div className="space-y-3 py-3"><div className="h-16 animate-pulse rounded-xl bg-gray-100" /><div className="h-16 animate-pulse rounded-xl bg-gray-100" /></div>
               ) : visitHistoryQuery.isError ? (
-                <div className="rounded-xl border border-destructive/25 bg-destructive/5 px-4 py-6 text-center" role="alert">
-                  <p className="text-sm font-semibold">Riwayat kunjungan tidak dapat dimuat</p>
-                  <button type="button" onClick={() => visitHistoryQuery.refetch()} className="mt-2 text-xs font-semibold text-primary underline underline-offset-2">Coba lagi</button>
-                </div>
+                <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-6 text-center"><p className="text-sm font-semibold text-red-600">Gagal memuat riwayat</p><button type="button" onClick={() => visitHistoryQuery.refetch()} className="mt-2 text-xs font-bold text-primary underline">Coba lagi</button></div>
               ) : (visitHistoryQuery.data ?? []).length === 0 ? (
-                <div className="rounded-xl border border-dashed border-border px-4 py-7 text-center text-sm text-muted-foreground" data-testid="status-visits-empty">
-                  Belum ada kunjungan SO tersimpan untuk toko ini.
-                </div>
+                <div className="rounded-xl border border-dashed border-gray-200 px-4 py-7 text-center text-sm text-gray-500">Belum ada data.</div>
               ) : (
                 <>
                   <ul className="space-y-3">
                     {(visitHistoryQuery.data ?? []).slice(0, visitDisplayLimit).map((visit) => (
-                      <li key={visit.id} className="rounded-xl border border-border p-3" data-testid={`row-visit-history-${visit.id}`}>
+                      <li key={visit.id} className="rounded-xl border border-gray-100 bg-gray-50 p-3 hover:bg-white hover:border-gray-200 transition-colors">
                         <div className="flex items-start justify-between gap-3">
                           <div className="min-w-0">
-                            <p className="truncate text-sm font-semibold">{visit.store}</p>
-                            <p className="mt-1 text-xs text-muted-foreground">{formatDate(visit.visitedAt)}</p>
+                            <p className="truncate text-sm font-bold text-gray-900">{visit.store}</p>
+                            <p className="mt-1 text-xs text-gray-500 font-medium">{formatDate(visit.visitedAt)}</p>
                           </div>
                           <div className="flex shrink-0 items-center gap-2">
-                            <span className="rounded-full bg-muted px-2.5 py-1 text-xs font-semibold">{visit.lines?.length ?? 0} SKU</span>
-                            <button type="button" onClick={() => onDeleteVisit(visit.id)} disabled={deleteVisit.isPending} className="rounded-lg p-2 text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:opacity-50" aria-label={`Hapus kunjungan ${formatDate(visit.visitedAt)}`} data-testid={`button-delete-visit-${visit.id}`}><Trash2 className="h-4 w-4" /></button>
+                            <span className="rounded-full bg-primary/10 text-primary px-2.5 py-1 text-[10px] font-bold">{visit.lines?.length ?? 0} SKU</span>
+                            <button type="button" onClick={() => onDeleteVisit(visit.id)} disabled={deleteVisit.isPending} className="rounded-lg p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-500 transition-colors disabled:opacity-50"><Trash2 className="h-4 w-4" /></button>
                           </div>
                         </div>
                       </li>
                     ))}
                   </ul>
-                  
                   <div className="flex gap-2 mt-4">
-                    {visitDisplayLimit > 5 && (
-                      <button type="button" onClick={() => setVisitDisplayLimit(prev => Math.max(5, prev - 5))} className="flex-1 py-2 text-sm font-semibold text-muted-foreground border border-border rounded-xl hover:bg-muted/50">Muat Lebih Sedikit</button>
-                    )}
-                    {visitDisplayLimit < (visitHistoryQuery.data ?? []).length && (
-                      <button type="button" onClick={() => setVisitDisplayLimit(prev => prev + 5)} className="flex-1 py-2 text-sm font-semibold text-primary border border-primary/30 rounded-xl hover:bg-primary/5">Muat Lebih Banyak</button>
-                    )}
+                    {visitDisplayLimit > 5 && <button type="button" onClick={() => setVisitDisplayLimit(prev => Math.max(5, prev - 5))} className="flex-1 py-2 text-xs font-bold text-gray-500 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors">Lebih Sedikit</button>}
+                    {visitDisplayLimit < (visitHistoryQuery.data ?? []).length && <button type="button" onClick={() => setVisitDisplayLimit(prev => prev + 5)} className="flex-1 py-2 text-xs font-bold text-primary border border-primary/20 rounded-lg hover:bg-primary/5 transition-colors">Lebih Banyak</button>}
                   </div>
                 </>
               )}
             </section>
           </div>
         ) : (
-          <div className="grid gap-5 lg:grid-cols-[0.9fr_1fr]">
-            <section className="rounded-2xl border border-border bg-card p-5">
-              <h2 className="font-serif text-xl font-bold">Catat barang masuk</h2>
-              <p className="mb-5 mt-1 text-sm text-muted-foreground">
-                Gunakan waktu barang benar-benar diterima. Jika waktunya sama dengan kunjungan SO, urutan transaksi tersimpan menentukan apakah barang sudah tercakup dalam hitungan fisik.
-              </p>
+          // TAB BARANG MASUK (Dibuat senada)
+          <div className="grid gap-6 lg:grid-cols-[0.9fr_1fr]">
+             <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm h-fit">
+              <h2 className="font-serif text-xl font-bold text-gray-900 mb-4 border-b border-gray-100 pb-3">Catat Barang Masuk</h2>
               <Form {...restockForm}>
                 <form onSubmit={onSaveRestock} className="space-y-4">
-                  <div>
-                    <label htmlFor="restock-product-select" className="mb-1.5 block text-sm font-medium">Pilih produk tersimpan (tanpa scan)</label>
-                    <select
-                      id="restock-product-select"
-                      value={restockProductSelection}
-                      onChange={(event) => {
-                        const product = allProductOptions.find((item) => item.barcode === event.target.value);
-                        setRestockProductSelection(product?.barcode ?? "");
-                        if (product) {
-                          restockForm.setValue("barcode", product.barcode, { shouldDirty: true, shouldValidate: true });
-                          restockForm.setValue("product", product.name, { shouldDirty: true, shouldValidate: true });
-                        }
-                      }}
-                      disabled={allProductOptions.length === 0}
-                      className="h-11 w-full rounded-lg border border-input bg-background px-3 text-sm disabled:opacity-60"
-                      data-testid="select-restock-product"
-                    >
-                      <option value="">Pilih produk dari daftar</option>
-                      {allProductOptions.map((product) => (
-                        <option key={product.barcode} value={product.barcode}>{product.name} · {product.barcode}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <FormField
-                    control={restockForm.control}
-                    name="barcode"
-                    render={({ field }) => (
+                  <FormField control={restockForm.control} name="barcode" render={({ field }) => (
                       <FormItem>
-                        <FormLabel>Barcode / kode produk</FormLabel>
+                        <FormLabel className="text-sm font-bold text-gray-700">Barcode / Scan</FormLabel>
                         <FormControl>
                           <div className="flex gap-2">
-                            <input
-                              {...field}
-                              list="restock-product-barcodes"
-                              onKeyDown={(event) => {
-                                if (event.key === "Enter") event.preventDefault();
-                              }}
-                              onChange={(event) => {
-                                field.onChange(event);
-                                const match = allProductOptions.find((product) => product.barcode === event.target.value.trim());
-                                setRestockProductSelection(match?.barcode ?? "");
-                                restockForm.setValue("product", match?.name ?? "", { shouldDirty: true, shouldValidate: false });
-                              }}
-                              placeholder="Masukkan kode atau scan"
-                              className="h-11 min-w-0 flex-1 rounded-lg border border-input bg-background px-3 text-sm"
-                              data-testid="input-restock-barcode"
-                            />
-                            <button
-                              type="button"
-                              onClick={() => setScannerTarget("restock")}
-                              className="inline-flex h-11 shrink-0 items-center gap-2 rounded-lg border border-border bg-card px-3 text-sm font-semibold hover:bg-muted"
-                            >
-                              <Camera className="h-4 w-4" /> Scan
-                            </button>
+                            <input {...field} list="restock-product-barcodes" onChange={(event) => { field.onChange(event); const match = allProductOptions.find((product) => product.barcode === event.target.value.trim()); setRestockProductSelection(match?.barcode ?? ""); restockForm.setValue("product", match?.name ?? "", { shouldDirty: true, shouldValidate: false }); }} placeholder="Scan atau ketik kode" className="h-12 min-w-0 flex-1 rounded-xl border border-gray-300 bg-gray-50 px-3 text-sm font-medium focus:border-primary focus:ring-1 focus:ring-primary outline-none" />
+                            <button type="button" onClick={() => setScannerTarget("restock")} className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-gray-900 text-white shadow-sm hover:bg-gray-800 transition-colors"><Camera className="h-5 w-5" /></button>
                           </div>
                         </FormControl>
-                        <datalist id="restock-product-barcodes">
-                          {allProductOptions.map((product) => <option key={product.barcode} value={product.barcode} label={product.name} />)}
-                        </datalist>
+                        <datalist id="restock-product-barcodes">{allProductOptions.map((product) => <option key={product.barcode} value={product.barcode} label={product.name} />)}</datalist>
                         <FormMessage />
                       </FormItem>
-                    )}
-                  />
-                  <FormField
-                    control={restockForm.control}
-                    name="product"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Nama produk</FormLabel>
-                        <FormControl>
-                          <input
-                            {...field}
-                            onChange={(event) => {
-                              setRestockProductSelection("");
-                              field.onChange(event);
-                            }}
-                            placeholder="Nama produk"
-                            className="h-11 w-full rounded-lg border border-input bg-background px-3 text-sm"
-                            data-testid="input-restock-product-name"
-                          />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                  <FormField
-                    control={restockForm.control}
-                    name="quantity"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Jumlah diterima</FormLabel>
-                        <FormControl>
-                          <input {...field} type="number" min="1" step="1" inputMode="numeric" placeholder="Contoh: 12" className="h-11 w-full rounded-lg border border-input bg-background px-3 text-sm" />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                  <FormField
-                    control={restockForm.control}
-                    name="receivedAt"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Waktu diterima</FormLabel>
-                        <FormControl>
-                          <input {...field} type="datetime-local" className="h-11 w-full rounded-lg border border-input bg-background px-3 text-sm" />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                  <FormField
-                    control={restockForm.control}
-                    name="note"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Catatan (opsional)</FormLabel>
-                        <FormControl>
-                          <textarea {...field} rows={3} maxLength={500} placeholder="Contoh: pengiriman pagi" className="w-full resize-y rounded-lg border border-input bg-background px-3 py-2 text-sm" />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                  <button
-                    type="submit"
-                    disabled={createRestock.isPending || !activeStore}
-                    className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 text-sm font-semibold text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    <PackagePlus className="h-4 w-4" />
-                    {createRestock.isPending ? "Menyimpan barang masuk..." : "Simpan barang masuk"}
-                  </button>
+                  )} />
+                  <FormField control={restockForm.control} name="product" render={({ field }) => (
+                      <FormItem><FormLabel className="text-sm font-bold text-gray-700">Nama Produk</FormLabel><FormControl><input {...field} onChange={(event) => { setRestockProductSelection(""); field.onChange(event); }} placeholder="Nama produk" className="h-12 w-full rounded-xl border border-gray-300 bg-gray-50 px-3 text-sm font-medium focus:border-primary outline-none" /></FormControl><FormMessage /></FormItem>
+                  )} />
+                  <FormField control={restockForm.control} name="quantity" render={({ field }) => (
+                      <FormItem><FormLabel className="text-sm font-bold text-primary">Jumlah Diterima</FormLabel><FormControl><input {...field} type="number" min="1" step="1" inputMode="numeric" placeholder="0" className="h-12 w-full rounded-xl border-2 border-primary/40 bg-blue-50/30 px-3 text-center text-xl font-bold text-primary focus:border-primary outline-none" /></FormControl><FormMessage /></FormItem>
+                  )} />
+                  <FormField control={restockForm.control} name="receivedAt" render={({ field }) => (
+                      <FormItem><FormLabel className="text-sm font-bold text-gray-700">Waktu Diterima</FormLabel><FormControl><input {...field} type="datetime-local" className="h-12 w-full rounded-xl border border-gray-300 bg-gray-50 px-3 text-sm font-medium focus:border-primary outline-none" /></FormControl><FormMessage /></FormItem>
+                  )} />
+                  <FormField control={restockForm.control} name="note" render={({ field }) => (
+                      <FormItem><FormLabel className="text-sm font-bold text-gray-700">Catatan (Opsional)</FormLabel><FormControl><textarea {...field} rows={2} maxLength={500} placeholder="Contoh: pengiriman pagi" className="w-full resize-y rounded-xl border border-gray-300 bg-gray-50 px-3 py-2 text-sm font-medium focus:border-primary outline-none" /></FormControl><FormMessage /></FormItem>
+                  )} />
+                  <button type="submit" disabled={createRestock.isPending || !activeStore} className="inline-flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 text-sm font-bold text-white shadow-md hover:opacity-90 active:scale-[0.98] transition-all disabled:opacity-50"><PackagePlus className="h-5 w-5" />{createRestock.isPending ? "Menyimpan..." : "Simpan Barang Masuk"}</button>
                 </form>
               </Form>
             </section>
 
-            <section className="rounded-2xl border border-border bg-card p-5">
-              <h2 className="font-serif text-xl font-bold">Barang masuk terakhir</h2>
-              <p className="mb-4 mt-1 text-sm text-muted-foreground">
-                {activeStore ? `Riwayat ${activeStore}` : "Semua toko."}
-              </p>
-              <label className="mb-4 block">
-                <span className="sr-only">Cari barang masuk</span>
-                <input
-                  type="search"
-                  value={restockSearch}
-                  onChange={(event) => {
-                    setRestockSearch(event.target.value);
-                    setRestockDisplayLimit(5); 
-                  }}
-                  placeholder="Cari produk, barcode, atau toko"
-                  className="h-10 w-full rounded-lg border border-input bg-background px-3 text-sm"
-                />
-              </label>
+            <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm h-fit">
+              <h2 className="font-serif text-xl font-bold text-gray-900 border-b border-gray-100 pb-3 mb-4">Riwayat Masuk</h2>
+              <p className="mb-4 text-xs font-medium text-gray-500">{activeStore ? `Toko: ${activeStore}` : "Semua toko."}</p>
+              <label className="mb-4 block"><span className="sr-only">Cari</span><input type="search" value={restockSearch} onChange={(event) => { setRestockSearch(event.target.value); setRestockDisplayLimit(5); }} placeholder="Cari produk..." className="h-10 w-full rounded-lg border border-gray-300 bg-gray-50 px-3 text-sm focus:border-primary outline-none" /></label>
               {restockHistoryQuery.isLoading ? (
-                <div className="space-y-3 py-3" aria-label="Memuat barang masuk">
-                  <div className="h-16 animate-pulse rounded-xl bg-muted" />
-                  <div className="h-16 animate-pulse rounded-xl bg-muted" />
-                </div>
-              ) : restockHistoryQuery.isError ? (
-                <div className="rounded-xl border border-destructive/25 bg-destructive/5 px-4 py-6 text-center" role="alert">
-                  <p className="text-sm font-semibold">Riwayat barang masuk tidak dapat dimuat</p>
-                  <button type="button" onClick={() => restockHistoryQuery.refetch()} className="mt-2 text-xs font-semibold text-primary underline underline-offset-2">Coba lagi</button>
-                </div>
+                <div className="space-y-3 py-3"><div className="h-16 animate-pulse rounded-xl bg-gray-100" /><div className="h-16 animate-pulse rounded-xl bg-gray-100" /></div>
               ) : visibleRestocks.length === 0 ? (
-                <div className="rounded-xl border border-dashed border-border px-4 py-7 text-center text-sm text-muted-foreground">
-                  {(restockHistoryQuery.data ?? []).length === 0
-                    ? "Belum ada barang masuk tersimpan."
-                    : "Tidak ada barang masuk yang cocok dengan pencarian."}
-                </div>
+                <div className="rounded-xl border border-dashed border-gray-200 px-4 py-7 text-center text-sm text-gray-500">Belum ada data.</div>
               ) : (
                 <>
                 <ul className="space-y-3">
-                  {visibleRestocks.slice(0, restockDisplayLimit).map((entry) => {
-                    return (
-                    <li key={entry.id} className="rounded-xl border border-border p-3">
+                  {visibleRestocks.slice(0, restockDisplayLimit).map((entry) => (
+                    <li key={entry.id} className="rounded-xl border border-gray-100 bg-gray-50 p-3 hover:bg-white transition-colors">
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
-                          <p className="truncate text-sm font-semibold">{entry.product} <span className="font-mono text-xs font-normal text-muted-foreground">· {entry.barcode}</span></p>
-                          <p className="mt-1 text-xs text-muted-foreground">{entry.store} · {formatDate(entry.receivedAt)}</p>
-                          {entry.note && <p className="mt-1 text-xs text-muted-foreground">{entry.note}</p>}
-                          <p className="mt-2 text-xs text-muted-foreground">
-                            Diterima {entry.quantity} unit · jumlah efektif {entry.effectiveQuantity} unit
-                          </p>
+                          <p className="truncate text-sm font-bold text-gray-900">{entry.product} <span className="font-mono text-[10px] font-normal text-gray-500">· {entry.barcode}</span></p>
+                          <p className="mt-1 text-xs text-gray-500 font-medium">{formatDate(entry.receivedAt)}</p>
+                          {entry.note && <p className="mt-1 text-xs text-gray-500 italic">{entry.note}</p>}
                         </div>
                         <div className="flex shrink-0 flex-col items-end gap-2">
-                          <span className="font-mono text-lg font-bold">+{entry.effectiveQuantity}</span>
-                          <div className="flex flex-wrap justify-end gap-2">
-                            <button
-                              type="button"
-                              onClick={() => onDeleteRestock(entry)}
-                              disabled={deleteRestock.isPending}
-                              className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-destructive/30 px-2.5 text-xs font-semibold text-destructive hover:bg-destructive/5 disabled:opacity-50"
-                            >
-                              <Trash2 className="h-3.5 w-3.5" /> Hapus
-                            </button>
-                          </div>
+                          <span className="font-mono text-lg font-black text-primary">+{entry.effectiveQuantity}</span>
+                          <button type="button" onClick={() => onDeleteRestock(entry)} disabled={deleteRestock.isPending} className="inline-flex h-7 items-center gap-1 rounded-md border border-red-200 px-2 text-[10px] font-bold text-red-500 hover:bg-red-50 disabled:opacity-50 transition-colors"><Trash2 className="h-3 w-3" /> Hapus</button>
                         </div>
                       </div>
                     </li>
-                  );
-                  })}
+                  ))}
                 </ul>
-
                 <div className="flex gap-2 mt-4">
-                  {restockDisplayLimit > 5 && (
-                    <button type="button" onClick={() => setRestockDisplayLimit(prev => Math.max(5, prev - 5))} className="flex-1 py-2 text-sm font-semibold text-muted-foreground border border-border rounded-xl hover:bg-muted/50">Muat Lebih Sedikit</button>
-                  )}
-                  {restockDisplayLimit < visibleRestocks.length && (
-                    <button type="button" onClick={() => setRestockDisplayLimit(prev => prev + 5)} className="flex-1 py-2 text-sm font-semibold text-primary border border-primary/30 rounded-xl hover:bg-primary/5">Muat Lebih Banyak</button>
-                  )}
+                  {restockDisplayLimit > 5 && <button type="button" onClick={() => setRestockDisplayLimit(prev => Math.max(5, prev - 5))} className="flex-1 py-2 text-xs font-bold text-gray-500 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors">Lebih Sedikit</button>}
+                  {restockDisplayLimit < visibleRestocks.length && <button type="button" onClick={() => setRestockDisplayLimit(prev => prev + 5)} className="flex-1 py-2 text-xs font-bold text-primary border border-primary/20 rounded-lg hover:bg-primary/5 transition-colors">Lebih Banyak</button>}
                 </div>
-
-                <p className="mt-3 text-xs text-muted-foreground text-center">
-                  {visibleRestocks.length} catatan ditemukan
-                </p>
                 </>
               )}
             </section>
           </div>
         )}
       </div>
-      <BarcodeScanner
-        isOpen={scannerTarget !== null}
-        onClose={() => setScannerTarget(null)}
-        onScanSuccess={handleScanSuccess}
-      />
+      <BarcodeScanner isOpen={scannerTarget !== null} onClose={() => setScannerTarget(null)} onScanSuccess={handleScanSuccess} />
     </main>
   );
 }
