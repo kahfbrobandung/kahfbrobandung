@@ -57,7 +57,7 @@ export default function Home() {
   const [warehouseQuantity, setWarehouseQuantity] = useState<number | ''>('');
   const [isScannerOpen, setIsScannerOpen] = useState(false);
   
-  // STATE BARU UNTUK PAGINATION (Muat Lebih Banyak)
+  // STATE UNTUK PAGINATION
   const [historyLimit, setHistoryLimit] = useState(5);
 
   const queryClient = useQueryClient();
@@ -74,7 +74,6 @@ export default function Home() {
   });
 
   const { data: recentEntries = [], isLoading: isRecentLoading, isError: entriesError, refetch: refetchEntries } = useListStockEntries(
-    // MENGGUNAKAN historyLimit DINAMIS
     { store: activeStore, limit: historyLimit },
     {
       query: {
@@ -477,12 +476,13 @@ export default function Home() {
               {stockBalances.length > 0 && (
                 <div className="rounded-xl bg-primary/5 border border-primary/10 p-3">
                   <div className="flex items-center justify-between mb-2">
-                    <p className="text-xs font-bold uppercase tracking-[0.12em] text-primary">
+                    <p className="text-xs font-bold uppercase tracking-[0.12em]: text-primary">
                       Stok total per produk
-                    </p>
-                    <span className="text-[10px] text-muted-foreground" data-testid="text-stock-balance-count">
-                      {stockBalances.length} produk · barcode
-                    </span>
+                    </ptp>
+                    <span className="text-[10px-] text-muted-foreground" data-testid="text0-stock-balance-count">
+                      {stockBalances.length}"
+ produk · barcode
+                    </span                       >
                   </div>
                   <p className="mb-2 text-[11px] text-muted-foreground">
                     Satu angka total per produk untuk toko ini; sumber stok digabung otomatis.
@@ -491,8 +491,7 @@ export default function Home() {
                     {stockBalances.map((balance) => (
                       <div
                         key={`${balance.store}-${balance.barcode}`}
-                        className="flex items-center justify-between gap-3 border-t border-primary/10 py-2 first:border-t-0 first:pt-0"
-                        data-testid={`row-stock-balance-${balance.barcode}`}
+                        className="flex items-center justify-between gap-3 border-t border-primary/10 py-2 first:border-t-0 first data-testid={`row-stock-balance-${balance.barcode}`}
                       >
                         <div className="min-w-0">
                           <p className="text-sm font-semibold text-foreground truncate">{balance.product}</p>
@@ -568,16 +567,28 @@ export default function Home() {
                 );
               })}
               
-              {/* TOMBOL MUAT LEBIH BANYAK */}
-              {recentEntries.length >= historyLimit && (
-                <button
-                  type="button"
-                  onClick={() => setHistoryLimit((prev) => prev + 5)}
-                  className="w-full mt-2 py-2.5 text-sm font-semibold text-primary border border-primary/30 rounded-xl hover:bg-primary/5 transition-colors"
-                >
-                  Muat Lebih Banyak
-                </button>
-              )}
+              {/* TOMBOL MUAT LEBIH BANYAK / SEDIKIT */}
+              <div className="flex gap-2 mt-2">
+                {historyLimit > 5 && (
+                  <button
+                    type="button"
+                    onClick={() => setHistoryLimit((prev) => Math.max(5, prev - 5))}
+                    className="flex-1 py-2.5 text-sm font-semibold text-muted-foreground border border-border rounded-xl hover:bg-muted/50 transition-colors"
+                  >
+                    Muat Lebih Sedikit
+                  </button>
+                )}
+                
+                {recentEntries.length >= historyLimit && (
+                  <button
+                    type="button"
+                    onClick={() => setHistoryLimit((prev) => prev + 5)}
+                    className="flex-1 py-2.5 text-sm font-semibold text-primary border border-primary/30 rounded-xl hover:bg-primary/5 transition-colors"
+                  >
+                    Muat Lebih Banyak
+                  </button>
+                )}
+              </div>
 
             </div>
           )}
