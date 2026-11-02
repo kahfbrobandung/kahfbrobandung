@@ -26,9 +26,8 @@ import { useStoreName } from "@/hooks/useStoreName";
 import { useToast } from "@/hooks/use-toast";
 import { BarcodeScanner } from "@/components/BarcodeScanner";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
-import { ArrowLeft, Boxes, Camera, ClipboardCheck, PackagePlus, Plus, Trash2, ShoppingCart, CheckCircle2 } from "lucide-react";
+import { ArrowLeft, Boxes, Camera, ClipboardCheck, PackagePlus, Plus, Trash2, ShoppingCart, CheckCircle2, Search } from "lucide-react";
 
-// Skema disederhanakan: Hanya butuh Barcode, Nama, dan Total Qty
 const visitCartItemSchema = z.object({
   barcode: z.string().trim().min(1, "Barcode wajib diisi."),
   product: z.string().trim().min(1, "Nama produk wajib diisi."),
@@ -60,25 +59,28 @@ function localDateTime() {
 
 function formatDate(value: string) {
   return new Date(value).toLocaleString("id-ID", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
+    day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit",
   });
 }
 
 export default function Operations() {
   const [, setLocation] = useLocation();
-
   const { products } = useProducts();
   const [storeName, setStoreName] = useStoreName();
   const activeStore = storeName.trim();
   const [activeTab, setActiveTab] = useState<"visit" | "restock">("visit");
   const [scannerTarget, setScannerTarget] = useState<"visit" | "restock" | null>(null);
   
+  // STATE UNTUK SEARCHABLE DROPDOWN KUNJUNGAN
   const [visitProductSelection, setVisitProductSelection] = useState("");
+  const [visitSearchQuery, setVisitSearchQuery] = useState("");
+  const [isVisitDropdownOpen, setIsVisitDropdownOpen] = useState(false);
+  const qtyInputRef = useRef<HTMLInputElement>(null);
+
+  // STATE UNTUK SEARCHABLE DROPDOWN RESTOCK
   const [restockProductSelection, setRestockProductSelection] = useState("");
+  const [restockSearchQuery, setRestockSearchQuery] = useState("");
+  const [isRestockDropdownOpen, setIsRestockDropdownOpen] = useState(false);
   
   const [cart, setCart] = useState<CartItem[]>([]);
   const [customProducts, setCustomProducts] = useState<{barcode: string, name: string}[]>([]);
@@ -92,9 +94,7 @@ export default function Operations() {
   const visitClientId = useRef<string | null>(null);
   const restockClientId = useRef<string | null>(null);
 
-  const storesQuery = useListStores({
-    query: { queryKey: getListStoresQueryKey(), staleTime: 5 * 60 * 1000 },
-  });
+  const storesQuery = useListStores({ query: { queryKey: getListStoresQueryKey(), staleTime: 5 * 60 * 1000 } });
   
   const visitParams = { store: activeStore || undefined, limit: 50 }; 
   const visitHistoryQuery = useListStockVisits(visitParams, {
@@ -121,6 +121,19 @@ export default function Operations() {
     return [...byBarcode.values()].sort((a, b) => a.name.localeCompare(b.name, "id"));
   }, [products, restockHistoryQuery.data, visitHistoryQuery.data, customProducts]);
 
+  // FILTER PENCARIAN KUNJUNGAN & RESTOCK
+  const filteredVisitProducts = useMemo(() => {
+    if (!visitSearchQuery) return allProductOptions.slice(0, 10); // Tampilkan 10 produk pertama kalau kosong
+    const q = visitSearchQuery.toLowerCase();
+    return allProductOptions.filter(p => p.name.toLowerCase().includes(q) || p.barcode.includes(q)).slice(0, 15);
+  }, [allProductOptions, visitSearchQuery]);
+
+  const filteredRestockProducts = useMemo(() => {
+    if (!restockSearchQuery) return allProductOptions.slice(0, 10);
+    const q = restockSearchQuery.toLowerCase();
+    return allProductOptions.filter(p => p.name.toLowerCase().includes(q) || p.barcode.includes(q)).slice(0, 15);
+  }, [allProductOptions, restockSearchQuery]);
+
   const visibleRestocks = useMemo(() => {
     const query = restockSearch.trim().toLocaleLowerCase("id-ID");
     const rows = restockHistoryQuery.data ?? [];
@@ -143,17 +156,39 @@ export default function Operations() {
     defaultValues: { barcode: "", product: "", quantity: "", receivedAt: localDateTime(), note: "" },
   });
 
+  const handleSelectVisitProduct = (product: { barcode: string; name: string }) => {
+    setVisitProductSelection(product.barcode);
+    setVisitSearchQuery(product.name);
+    visitCartForm.setValue("barcode", product.barcode, { shouldValidate: true });
+    visitCartForm.setValue("product", product.name, { shouldValidate: true });
+    setIsVisitDropdownOpen(false);
+    // Otomatis fokus ke input jumlah
+    setTimeout(() => qtyInputRef.current?.focus(), 50);
+  };
+
+  const handleSelectRestockProduct = (product: { barcode: string; name: string }) => {
+    setRestockProductSelection(product.barcode);
+    setRestockSearchQuery(product.name);
+    restockForm.setValue("barcode", product.barcode, { shouldValidate: true });
+    restockForm.setValue("product", product.name, { shouldValidate: true });
+    setIsRestockDropdownOpen(false);
+  };
+
   const setScannedBarcode = (target: "visit" | "restock", scannedValue: string) => {
     const barcode = scannedValue.trim();
     const knownProduct = allProductOptions.find((product) => product.barcode === barcode);
     if (target === "visit") {
-      setVisitProductSelection(knownProduct?.barcode ?? "");
-      visitCartForm.setValue("barcode", barcode, { shouldDirty: true, shouldValidate: true });
-      visitCartForm.setValue("product", knownProduct?.name ?? "", { shouldDirty: true, shouldValidate: true });
+      if (knownProduct) handleSelectVisitProduct(knownProduct);
+      else {
+        visitCartForm.setValue("barcode", barcode, { shouldDirty: true, shouldValidate: true });
+        visitCartForm.setValue("product", "", { shouldDirty: true, shouldValidate: true });
+      }
     } else {
-      setRestockProductSelection(knownProduct?.barcode ?? "");
-      restockForm.setValue("barcode", barcode, { shouldDirty: true, shouldValidate: true });
-      restockForm.setValue("product", knownProduct?.name ?? "", { shouldDirty: true, shouldValidate: true });
+      if (knownProduct) handleSelectRestockProduct(knownProduct);
+      else {
+        restockForm.setValue("barcode", barcode, { shouldDirty: true, shouldValidate: true });
+        restockForm.setValue("product", "", { shouldDirty: true, shouldValidate: true });
+      }
     }
     return knownProduct;
   };
@@ -193,10 +228,9 @@ export default function Operations() {
       }
     });
 
-    visitCartForm.setValue("quantity", "");
-    visitProductSelection("");
-    // Fokus balik ke input scan/pilih produk (opsional, biar cepet)
-    visitCartForm.setFocus("barcode");
+    visitCartForm.reset({ barcode: "", product: "", quantity: "" });
+    setVisitProductSelection("");
+    setVisitSearchQuery(""); // Reset search bar
     
     toast({ title: "Masuk Keranjang", description: `+${qty} unit ${productName}` });
   });
@@ -252,6 +286,7 @@ export default function Operations() {
         onSuccess: (entry) => {
           restockClientId.current = null;
           setRestockProductSelection("");
+          setRestockSearchQuery("");
           restockForm.reset({ barcode: "", product: "", quantity: "", receivedAt: localDateTime(), note: "" });
           refreshAffectedData();
           toast({ title: "Barang masuk tersimpan", description: `+${entry.quantity} unit ${entry.product}` });
@@ -321,36 +356,61 @@ export default function Operations() {
                 <h2 className="font-serif text-xl font-bold text-gray-900 mb-4">Scan & Hitung</h2>
                 <Form {...visitCartForm}>
                   <form onSubmit={onAddToCart} className="space-y-4">
-                    <div>
-                      <label className="mb-2 block text-sm font-bold text-gray-700">Pilih Produk / Scan</label>
+                    
+                    {/* SEARCHABLE DROPDOWN KUNJUNGAN */}
+                    <div className="relative">
+                      <label className="mb-2 block text-sm font-bold text-gray-700">Cari / Scan Produk</label>
                       <div className="flex gap-2">
-                        <select
-                          value={visitProductSelection}
-                          onChange={(event) => {
-                            const product = allProductOptions.find((item) => item.barcode === event.target.value);
-                            setVisitProductSelection(product?.barcode ?? "");
-                            if (product) {
-                              visitCartForm.setValue("barcode", product.barcode, { shouldValidate: true });
-                              visitCartForm.setValue("product", product.name, { shouldValidate: true });
-                            }
-                          }}
-                          className="h-12 min-w-0 flex-1 rounded-xl border border-gray-300 bg-gray-50 px-3 text-sm font-medium focus:border-primary focus:ring-1 focus:ring-primary outline-none"
-                        >
-                          <option value="">-- Cari Produk --</option>
-                          {allProductOptions.map((product) => (
-                            <option key={product.barcode} value={product.barcode}>{product.name}</option>
-                          ))}
-                        </select>
+                        <div className="relative flex-1">
+                          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+                          <input
+                            type="text"
+                            placeholder="Ketik nama produk / barcode..."
+                            value={visitSearchQuery}
+                            onChange={(e) => {
+                              setVisitSearchQuery(e.target.value);
+                              setIsVisitDropdownOpen(true);
+                              if (e.target.value === "") {
+                                setVisitProductSelection("");
+                                visitCartForm.setValue("barcode", "");
+                                visitCartForm.setValue("product", "");
+                              }
+                            }}
+                            onFocus={() => setIsVisitDropdownOpen(true)}
+                            onBlur={() => setTimeout(() => setIsVisitDropdownOpen(false), 200)}
+                            className="h-12 w-full rounded-xl border border-gray-300 bg-gray-50 pl-9 pr-3 text-sm font-medium focus:border-primary focus:ring-1 focus:ring-primary outline-none"
+                          />
+                        </div>
                         <button type="button" onClick={() => setScannerTarget("visit")} className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-primary text-white shadow-sm hover:opacity-90 transition-opacity">
                           <Camera className="h-5 w-5" />
                         </button>
                       </div>
+
+                      {/* DROPDOWN LIST KUNJUNGAN */}
+                      {isVisitDropdownOpen && (
+                        <div className="absolute z-50 w-full mt-1 bg-white border border-gray-200 rounded-xl shadow-xl max-h-60 overflow-y-auto">
+                          {filteredVisitProducts.length === 0 ? (
+                            <div className="p-4 text-sm text-center text-gray-500">Produk tidak ditemukan.</div>
+                          ) : (
+                            filteredVisitProducts.map((p) => (
+                              <div
+                                key={p.barcode}
+                                onClick={() => handleSelectVisitProduct(p)}
+                                className="p-3 text-sm hover:bg-gray-50 cursor-pointer border-b border-gray-100 last:border-0"
+                              >
+                                <p className="font-bold text-gray-900">{p.name}</p>
+                                <p className="text-xs text-gray-500 font-mono mt-0.5">{p.barcode}</p>
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      )}
                     </div>
 
                     <div className="grid grid-cols-2 gap-3">
                       <FormField control={visitCartForm.control} name="product" render={({ field }) => (
                         <FormItem>
-                          <FormLabel className="text-xs font-semibold text-gray-500">Nama Produk</FormLabel>
+                          <FormLabel className="text-xs font-semibold text-gray-500">Nama Terpilih</FormLabel>
                           <FormControl><input {...field} readOnly placeholder="Auto" className="h-12 w-full rounded-xl border border-gray-200 bg-gray-100 px-3 text-sm font-medium text-gray-600" /></FormControl>
                           <FormMessage />
                         </FormItem>
@@ -358,7 +418,19 @@ export default function Operations() {
                       <FormField control={visitCartForm.control} name="quantity" render={({ field }) => (
                         <FormItem>
                           <FormLabel className="text-xs font-bold text-primary">Jumlah Fisik</FormLabel>
-                          <FormControl><input {...field} type="number" inputMode="numeric" placeholder="0" className="h-12 w-full rounded-xl border-2 border-primary/40 bg-blue-50/30 px-3 text-center text-xl font-bold text-primary focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all placeholder:text-primary/30" /></FormControl>
+                          <FormControl>
+                            <input 
+                              {...field} 
+                              ref={(e) => {
+                                field.ref(e); // Hubungkan ref react-hook-form
+                                qtyInputRef.current = e; // Simpan ref buat auto-focus
+                              }}
+                              type="number" 
+                              inputMode="numeric" 
+                              placeholder="0" 
+                              className="h-12 w-full rounded-xl border-2 border-primary/40 bg-blue-50/30 px-3 text-center text-xl font-bold text-primary focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all placeholder:text-primary/30" 
+                            />
+                          </FormControl>
                           <FormMessage />
                         </FormItem>
                       )} />
@@ -473,25 +545,63 @@ export default function Operations() {
             </section>
           </div>
         ) : (
-          // TAB BARANG MASUK (Dibuat senada)
+          // TAB BARANG MASUK
           <div className="grid gap-6 lg:grid-cols-[0.9fr_1fr]">
              <section className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm h-fit">
               <h2 className="font-serif text-xl font-bold text-gray-900 mb-4 border-b border-gray-100 pb-3">Catat Barang Masuk</h2>
               <Form {...restockForm}>
                 <form onSubmit={onSaveRestock} className="space-y-4">
-                  <FormField control={restockForm.control} name="barcode" render={({ field }) => (
-                      <FormItem>
-                        <FormLabel className="text-sm font-bold text-gray-700">Barcode / Scan</FormLabel>
-                        <FormControl>
-                          <div className="flex gap-2">
-                            <input {...field} list="restock-product-barcodes" onChange={(event) => { field.onChange(event); const match = allProductOptions.find((product) => product.barcode === event.target.value.trim()); setRestockProductSelection(match?.barcode ?? ""); restockForm.setValue("product", match?.name ?? "", { shouldDirty: true, shouldValidate: false }); }} placeholder="Scan atau ketik kode" className="h-12 min-w-0 flex-1 rounded-xl border border-gray-300 bg-gray-50 px-3 text-sm font-medium focus:border-primary focus:ring-1 focus:ring-primary outline-none" />
-                            <button type="button" onClick={() => setScannerTarget("restock")} className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-gray-900 text-white shadow-sm hover:bg-gray-800 transition-colors"><Camera className="h-5 w-5" /></button>
-                          </div>
-                        </FormControl>
-                        <datalist id="restock-product-barcodes">{allProductOptions.map((product) => <option key={product.barcode} value={product.barcode} label={product.name} />)}</datalist>
-                        <FormMessage />
-                      </FormItem>
-                  )} />
+                  
+                  {/* SEARCHABLE DROPDOWN RESTOCK */}
+                  <div className="relative">
+                    <label className="mb-2 block text-sm font-bold text-gray-700">Cari / Scan Produk</label>
+                    <div className="flex gap-2">
+                      <div className="relative flex-1">
+                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+                        <input
+                          type="text"
+                          placeholder="Ketik nama produk / barcode..."
+                          value={restockSearchQuery}
+                          onChange={(e) => {
+                            setRestockSearchQuery(e.target.value);
+                            setIsRestockDropdownOpen(true);
+                            if (e.target.value === "") {
+                              setRestockProductSelection("");
+                              restockForm.setValue("barcode", "");
+                              restockForm.setValue("product", "");
+                            }
+                          }}
+                          onFocus={() => setIsRestockDropdownOpen(true)}
+                          onBlur={() => setTimeout(() => setIsRestockDropdownOpen(false), 200)}
+                          className="h-12 w-full rounded-xl border border-gray-300 bg-gray-50 pl-9 pr-3 text-sm font-medium focus:border-primary focus:ring-1 focus:ring-primary outline-none"
+                        />
+                      </div>
+                      <button type="button" onClick={() => setScannerTarget("restock")} className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-gray-900 text-white shadow-sm hover:bg-gray-800 transition-colors">
+                        <Camera className="h-5 w-5" />
+                      </button>
+                    </div>
+
+                    {/* DROPDOWN LIST RESTOCK */}
+                    {isRestockDropdownOpen && (
+                      <div className="absolute z-50 w-full mt-1 bg-white border border-gray-200 rounded-xl shadow-xl max-h-60 overflow-y-auto">
+                        {filteredRestockProducts.length === 0 ? (
+                          <div className="p-4 text-sm text-center text-gray-500">Produk tidak ditemukan.</div>
+                        ) : (
+                          filteredRestockProducts.map((p) => (
+                            <div
+                              key={p.barcode}
+                              onClick={() => handleSelectRestockProduct(p)}
+                              className="p-3 text-sm hover:bg-gray-50 cursor-pointer border-b border-gray-100 last:border-0"
+                            >
+                              <p className="font-bold text-gray-900">{p.name}</p>
+                              <p className="text-xs text-gray-500 font-mono mt-0.5">{p.barcode}</p>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    )}
+                  </div>
+
                   <FormField control={restockForm.control} name="product" render={({ field }) => (
                       <FormItem><FormLabel className="text-sm font-bold text-gray-700">Nama Produk</FormLabel><FormControl><input {...field} onChange={(event) => { setRestockProductSelection(""); field.onChange(event); }} placeholder="Nama produk" className="h-12 w-full rounded-xl border border-gray-300 bg-gray-50 px-3 text-sm font-medium focus:border-primary outline-none" /></FormControl><FormMessage /></FormItem>
                   )} />
