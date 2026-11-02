@@ -476,13 +476,12 @@ export default function Home() {
               {stockBalances.length > 0 && (
                 <div className="rounded-xl bg-primary/5 border border-primary/10 p-3">
                   <div className="flex items-center justify-between mb-2">
-                    <p className="text-xs font-bold uppercase tracking-[0.12em]: text-primary">
+                    <p className="text-xs font-bold uppercase tracking-[0.12em] text-primary">
                       Stok total per produk
-                    </ptp>
-                    <span className="text-[10px-] text-muted-foreground" data-testid="text0-stock-balance-count">
-                      {stockBalances.length}"
- produk · barcode
-                    </span                       >
+                    </p>
+                    <span className="text-[10px] text-muted-foreground" data-testid="text-stock-balance-count">
+                      {stockBalances.length} produk · barcode
+                    </span>
                   </div>
                   <p className="mb-2 text-[11px] text-muted-foreground">
                     Satu angka total per produk untuk toko ini; sumber stok digabung otomatis.
@@ -491,7 +490,8 @@ export default function Home() {
                     {stockBalances.map((balance) => (
                       <div
                         key={`${balance.store}-${balance.barcode}`}
-                        className="flex items-center justify-between gap-3 border-t border-primary/10 py-2 first:border-t-0 first data-testid={`row-stock-balance-${balance.barcode}`}
+                        className="flex items-center justify-between gap-3 border-t border-primary/10 py-2 first:border-t-0 first:pt-0"
+                        data-testid={`row-stock-balance-${balance.barcode}`}
                       >
                         <div className="min-w-0">
                           <p className="text-sm font-semibold text-foreground truncate">{balance.product}</p>
