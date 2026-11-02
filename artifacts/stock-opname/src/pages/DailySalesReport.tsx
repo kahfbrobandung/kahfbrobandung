@@ -101,17 +101,44 @@ export default function DailySalesReport() {
               <span className="text-xs">(Pastikan ada minimal 2x Kunjungan SO untuk produk yang sama di toko ini).</span>
             </div>
           ) : (
-            <ul className="space-y-3">
+            <ul className="space-y-4">
               {soldItems.map((item, index) => (
-                <li key={`${item.barcode}-${index}`} className="flex items-center justify-between gap-3 border-b border-border pb-3 last:border-0 last:pb-0">
-                  <div>
-                    <p className="text-sm font-semibold">{item.product}</p>
-                    <p className="text-xs text-muted-foreground font-mono">{item.barcode}</p>
-                    <p className="text-[11px] text-muted-foreground mt-0.5">
-                      SO Terakhir: {new Date(item.currentVisitAt).toLocaleDateString("id-ID", { day: "2-digit", month: "short", year: "numeric" })}
-                    </p>
+                <li key={`${item.barcode}-${index}`} className="border border-border rounded-xl p-4 shadow-sm bg-card">
+                  
+                  {/* Baris Atas: Nama Produk & Angka Terjual */}
+                  <div className="flex justify-between items-start mb-3">
+                    <div className="pr-2">
+                      <p className="text-sm font-bold text-foreground">{item.product}</p>
+                      <p className="text-[11px] text-muted-foreground font-mono">{item.barcode}</p>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <p className="text-[10px] uppercase tracking-wider font-semibold text-muted-foreground">Terjual</p>
+                      <p className="text-2xl font-bold text-emerald-600">
+                        {item.soldQuantity} <span className="text-xs font-normal text-emerald-600/70">pcs</span>
+                      </p>
+                    </div>
                   </div>
-                  <span className="font-mono font-bold text-destructive text-lg">-{item.soldQuantity}</span>
+
+                  {/* Baris Bawah: Rincian Hitungan */}
+                  <div className="grid grid-cols-3 gap-1 bg-muted/50 rounded-lg p-2 text-center">
+                    <div>
+                      <p className="text-[10px] text-muted-foreground">Stok Awal</p>
+                      <p className="text-sm font-semibold">{item.previousStock}</p>
+                    </div>
+                    <div className="border-x border-border/50">
+                      <p className="text-[10px] text-muted-foreground">Stok Masuk</p>
+                      <p className="text-sm font-semibold text-blue-600">+{item.restockQuantity + item.stockEntryAdjustment}</p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] text-muted-foreground">Stok Akhir (SO)</p>
+                      <p className="text-sm font-semibold">{item.currentStock}</p>
+                    </div>
+                  </div>
+                  
+                  <p className="text-[10px] text-muted-foreground text-center mt-2">
+                    SO Terakhir: {new Date(item.currentVisitAt).toLocaleDateString("id-ID", { day: "2-digit", month: "short", year: "numeric" })}
+                  </p>
+
                 </li>
               ))}
             </ul>
