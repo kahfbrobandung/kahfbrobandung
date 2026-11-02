@@ -98,7 +98,7 @@ export default function Operations() {
   const [lines, setLines] = useState<StocktakeLineInput[]>([]);
   const [restockSearch, setRestockSearch] = useState("");
   
-  // STATE BARU UNTUK PAGINATION
+  // STATE UNTUK PAGINATION
   const [visitDisplayLimit, setVisitDisplayLimit] = useState(5);
   const [restockDisplayLimit, setRestockDisplayLimit] = useState(5);
 
@@ -110,7 +110,8 @@ export default function Operations() {
   const storesQuery = useListStores({
     query: { queryKey: getListStoresQueryKey(), staleTime: 5 * 60 * 1000 },
   });
-  const visitParams = { store: activeStore || undefined, limit: 50 }; // Dinaikkan jadi 50 agar pagination lebih berguna
+  
+  const visitParams = { store: activeStore || undefined, limit: 50 }; 
   const visitHistoryQuery = useListStockVisits(visitParams, {
     query: {
       queryKey: getListStockVisitsQueryKey(visitParams),
@@ -119,6 +120,7 @@ export default function Operations() {
       refetchOnMount: "always",
     },
   });
+  
   const restockParams = { store: activeStore || undefined, limit: 500 };
   const restockHistoryQuery = useListStockRestocks(restockParams, {
     query: {
@@ -210,13 +212,12 @@ export default function Operations() {
     queryClient.invalidateQueries({ queryKey: getListStockRestocksQueryKey() });
     queryClient.invalidateQueries({ queryKey: getListStockBalancesQueryKey() });
     queryClient.invalidateQueries({ queryKey: getListStoresQueryKey() });
-    queryClient.invalidateQueries({ queryKey: getGetSalesMonitorQueryKey() SO });
-    queryClient.invalidateQueries({ queryKey: get
-GetSalesActivityQuery         Key() });
+    queryClient.invalidateQueries({ queryKey: getGetSalesMonitorQueryKey() });
+    queryClient.invalidateQueries({ queryKey: getGetSalesActivityQueryKey() });
   };
 
-  </ const onAddLine = lineForm.handleSubmit((values) => {
-    if (!activeStorebutton) {
+  const onAddLine = lineForm.handleSubmit((values) => {
+    if (!activeStore) {
       toast({
         title: "Pilih toko terlebih dahulu",
         description: "Satu kunjungan hanya boleh berisi stok dari satu toko.",
@@ -421,7 +422,8 @@ GetSalesActivityQuery         Key() });
             className={`inline-flex h-10 items-center justify-center gap-2 rounded-lg px-3 text-sm font-semibold transition ${activeTab === "visit" ? "bg-card text-foreground" : "text-muted-foreground hover:text-foreground"}`}
             data-testid="tab-stock-visit"
           >
-            <ClipboardCheck className="h-4 w-4" /> Kunjungan>
+            <ClipboardCheck className="h-4 w-4" /> Kunjungan SO
+          </button>
           <button
             type="button"
             role="tab"
@@ -682,7 +684,6 @@ GetSalesActivityQuery         Key() });
                     ))}
                   </ul>
                   
-                  {/* TOMBOL PAGINATION KUNJUNGAN */}
                   <div className="flex gap-2 mt-4">
                     {visitDisplayLimit > 5 && (
                       <button type="button" onClick={() => setVisitDisplayLimit(prev => Math.max(5, prev - 5))} className="flex-1 py-2 text-sm font-semibold text-muted-foreground border border-border rounded-xl hover:bg-muted/50">Muat Lebih Sedikit</button>
@@ -863,7 +864,7 @@ GetSalesActivityQuery         Key() });
                   value={restockSearch}
                   onChange={(event) => {
                     setRestockSearch(event.target.value);
-                    setRestockDisplayLimit(5); // Reset pagination saat mencari
+                    setRestockDisplayLimit(5); 
                   }}
                   placeholder="Cari produk, barcode, atau toko"
                   className="h-10 w-full rounded-lg border border-input bg-background px-3 text-sm"
@@ -921,7 +922,6 @@ GetSalesActivityQuery         Key() });
                   })}
                 </ul>
 
-                {/* TOMBOL PAGINATION BARANG MASUK */}
                 <div className="flex gap-2 mt-4">
                   {restockDisplayLimit > 5 && (
                     <button type="button" onClick={() => setRestockDisplayLimit(prev => Math.max(5, prev - 5))} className="flex-1 py-2 text-sm font-semibold text-muted-foreground border border-border rounded-xl hover:bg-muted/50">Muat Lebih Sedikit</button>
