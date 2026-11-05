@@ -9,9 +9,9 @@ const router = Router();
 
 const JWT_SECRET = process.env.JWT_SECRET || "rahasia-erlangga-super-aman-2026";
 
-// Validasi input (ditambahkan .trim() agar kebal spasi tak sengaja)
+// PERBAIKAN: Mengganti .email() dengan .regex() agar tidak error di iPhone
 const authSchema = z.object({
-  email: z.string().trim().email("Format email tidak valid"),
+  email: z.string().trim().regex(/^[^\s@]+@[^\s@]+\.[^\s@]+$/, "Format email tidak valid (contoh: nama@gmail.com)"),
   password: z.string().min(6, "Password minimal 6 karakter"),
   name: z.string().trim().min(2, "Nama minimal 2 karakter").optional(),
 });
@@ -20,6 +20,7 @@ const authSchema = z.object({
 router.post("/register", async (req, res): Promise<void> => {
   const parsed = authSchema.safeParse(req.body);
   if (!parsed.success) {
+    // Mengirim pesan error yang lebih jelas ke frontend
     res.status(400).json({ error: parsed.error.errors[0].message });
     return;
   }
