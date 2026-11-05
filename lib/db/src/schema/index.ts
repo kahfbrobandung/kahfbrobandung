@@ -1,2 +1,12 @@
-export * from "./stock-entries";
-export * from "./store-sales";
+import { pgTable, serial, text, timestamp } from "drizzle-orm/pg-core";
+
+export const usersTable = pgTable("users", {
+  id: serial("id").primaryKey(),
+  email: text("email").notNull().unique(),
+  passwordHash: text("password_hash").notNull(),
+  name: text("name").notNull(),
+  role: text("role").default("user").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type User = typeof usersTable.$inferSelect;
