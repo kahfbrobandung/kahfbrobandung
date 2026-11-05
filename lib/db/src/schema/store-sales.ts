@@ -8,6 +8,7 @@ import {
   timestamp,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
+import { usersTable } from "./users";
 
 export const storesTable = pgTable(
   "stores",
@@ -15,6 +16,7 @@ export const storesTable = pgTable(
     id: serial("id").primaryKey(),
     name: text("name").notNull(),
     normalizedName: text("normalized_name").notNull(),
+    userId: integer("user_id").references(() => usersTable.id, { onDelete: "cascade" }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
