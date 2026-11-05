@@ -1,1 +1,5 @@
-{"installCommand":"npx pnpm@9 install --no-frozen-lockfile","buildCommand":"npx pnpm@9 --filter @workspace/stock-opname build","outputDirectory":"artifacts/stock-opname/dist"}
+{
+  "installCommand": "npx pnpm@9 install --no-frozen-lockfile",
+  "buildCommand": "npx pnpm@9 --filter @workspace/api-server build",
+  "outputDirectory": "artifacts/api-server/dist"
+}
