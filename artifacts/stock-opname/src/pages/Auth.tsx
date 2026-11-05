@@ -28,10 +28,19 @@ export default function Auth() {
         body: JSON.stringify(payload),
       });
 
-      const data = await response.json();
+      // BACA SEBAGAI TEKS DULU UNTUK MENGHINDARI CRASH
+      const textData = await response.text();
+      let data;
+      
+      try {
+        data = JSON.parse(textData);
+      } catch (e) {
+        console.error("Server Error Response:", textData);
+        throw new Error(`Server Error (${response.status}): Rute API mungkin belum siap.`);
+      }
 
       if (!response.ok) {
-        throw new Error(data.error || "Terjadi kesalahan");
+        throw new Error(data.error || "Terjadi kesalahan pada server");
       }
 
       // Simpan token ke localStorage
