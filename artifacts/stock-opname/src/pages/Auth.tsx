@@ -18,7 +18,15 @@ export default function Auth() {
     e.preventDefault();
     setIsLoading(true);
 
-    const endpoint = isLogin ? "/api/auth/login" : "/api/auth/register";
+    // ⚠️ GANTI URL DI BAWAH INI DENGAN URL BACKEND VERCEL KAMU
+    // Cek dashboard Vercel, cari project yang isinya api-server, copy link domainnya.
+    // Contoh: https://kahfbrobandung-bay.vercel.app
+    const API_BASE_URL = "https://kahfbrobandung-bay.vercel.app"; 
+
+    const endpoint = isLogin 
+      ? `${API_BASE_URL}/api/auth/login` 
+      : `${API_BASE_URL}/api/auth/register`;
+      
     const payload = isLogin ? { email, password } : { email, password, name };
 
     try {
@@ -36,7 +44,7 @@ export default function Auth() {
         data = JSON.parse(textData);
       } catch (e) {
         console.error("Server Error Response:", textData);
-        throw new Error(`Server Error (${response.status}): Rute API mungkin belum siap.`);
+        throw new Error(`Server Error (${response.status}): Gagal terhubung ke API.`);
       }
 
       if (!response.ok) {
