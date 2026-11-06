@@ -5,8 +5,7 @@ import NotFound from '@/pages/not-found';
 import HomePage from '@/pages/Home';
 import OperationsPage from '@/pages/Operations';
 import DailySalesReport from '@/pages/DailySalesReport';
-import AuthPage from '@/pages/Auth'; // Import halaman login
-import { Route, Switch, Router as WouterRouter, Redirect } from 'wouter'; // Tambah Redirect
+import { Route, Switch, Router as WouterRouter } from 'wouter';
 import { useHashLocation } from 'wouter/use-hash-location';
 
 const queryClient = new QueryClient({
@@ -19,25 +18,11 @@ const queryClient = new QueryClient({
 });
 
 function Router() {
-  // Cek apakah user sudah login (punya token dari localStorage)
-  const isAuthenticated = !!localStorage.getItem("erlangga_token");
-
   return (
     <Switch>
-      {/* Halaman Login/Daftar selalu bisa diakses */}
-      <Route path="/auth" component={AuthPage} />
-      
-      {/* Halaman yang dilindungi (Wajib Login) */}
-      <Route path="/">
-        {isAuthenticated ? <HomePage /> : <Redirect to="/auth" />}
-      </Route>
-      <Route path="/operasional">
-        {isAuthenticated ? <OperationsPage /> : <Redirect to="/auth" />}
-      </Route>
-      <Route path="/dashboard">
-        {isAuthenticated ? <DailySalesReport /> : <Redirect to="/auth" />}
-      </Route>
-      
+      <Route path="/" component={HomePage} />
+      <Route path="/operasional" component={OperationsPage} />
+      <Route path="/dashboard" component={DailySalesReport} />
       <Route component={NotFound} />
     </Switch>
   );
