@@ -1,23 +1,12 @@
-import React, { useState, useMemo, useCallback } from 'react';
-import { useProducts } from '@/hooks/useProducts';
+import React, { useState, useMemo, useCallback, useRef, useEffect } from 'react';
+import { useProducts, type Product } from '@/hooks/useProducts';
 import { useStoreName } from '@/hooks/useStoreName';
 import { BarcodeScanner } from '@/components/BarcodeScanner';
 import { ProductManager } from '@/components/ProductManager';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { useToast } from '@/hooks/use-toast';
 import {
-  Box,
-  CheckCircle2,
-  Cloud,
-  PackageSearch,
-  QrCode,
-  RefreshCw,
-  Send,
-  Trash2,
-  Plus,
-  ShoppingCart,
-  Search,
-  Camera
+  Box, CheckCircle2, Cloud, RefreshCw, Send, Trash2, Plus, Minus, ShoppingCart, Search, Camera, X
 } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Link } from 'wouter';
@@ -34,24 +23,12 @@ import {
   useDeleteStockEntry,
   useListStockBalances,
   useListStockEntries,
-  type StockBalance,
-  type StockEntry,
 } from '@workspace/api-client-react';
 
-const TRANSACTIONS = [
-  'Input Stok',
-  'Stock Awal',
-  'Penjualan',
-  'Koreksi Stok +',
-  'Koreksi Stok -',
-  'Pembelian',
-  'Retur',
-  'Lainnya'
-];
+const TRANSACTIONS = ['Input Stok', 'Stock Awal', 'Penjualan', 'Koreksi Stok +', 'Koreksi Stok -', 'Pembelian', 'Retur', 'Lainnya'];
 
 type CartItem = {
-  barcode: string;
-  product: string;
+  product: Product;
   displayQuantity: number;
   secondaryDisplayQuantity: number;
   warehouseQuantity: number;
@@ -62,116 +39,149 @@ export default function Home() {
   const [storeName, setStoreName] = useStoreName();
   const { toast } = useToast();
 
+  // States Utama
   const [transaction, setTransaction] = useState(TRANSACTIONS[0]);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [selectedBarcode, setSelectedBarcode] = useState('');
-  const [displayQuantity, setDisplayQuantity] = useState<number | ''>('');
-  const [secondaryDisplayQuantity, setSecondaryDisplayQuantity] = useState<number | ''>('');
-  const [warehouseQuantity, setWarehouseQuantity] = useState<number | ''>('');
   const [isScannerOpen, setIsScannerOpen] = useState(false);
   
-  // STATE UNTUK KERANJANG
+  // States Pencarian Kustom
+  const [searchQuery, setSearchQuery] = useState('');
+  const [showSearchResults, setShowSearchResults] = useState(false);
+  const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
+  const searchContainerRef = useRef<HTMLDivElement>(null);
+
+  // States Jumlah
+  const [displayQuantity, setDisplayQuantity] = useState<string>('');
+  const [secondaryDisplayQuantity, setSecondaryDisplayQuantity] = useState<string>('');
+  const [warehouseQuantity, setWarehouseQuantity] = useState<string>('');
+  
+  // States Keranjang & Riwayat
   const [cart, setCart] = useState<CartItem[]>([]);
   const [isSaving, setIsSaving] = useState(false);
-
   const [historyLimit, setHistoryLimit] = useState(5);
 
   const queryClient = useQueryClient();
   const activeStore = storeName.trim();
-  const totalStock = Number(displayQuantity || 0) + Number(secondaryDisplayQuantity || 0) + Number(warehouseQuantity || 0);
-  
-  const { data: health } = useHealthCheck({
-    query: { queryKey: getHealthCheckQueryKey(), refetchInterval: 30_000 },
-  });
-  const storesQuery = useListStores({
-    query: { queryKey: getListStoresQueryKey(), staleTime: 5 * 60 * 1000 },
-  });
 
-  const { data: recentEntries = [], isLoading: isRecentLoading } = useListStockEntries(
+  // Queries
+  const { data: health } = useHealthCheck({ query: { queryKey: getHealthCheckQueryKey(), refetchInterval: 30000 } });
+  const storesQuery = useListStores({ query: { queryKey: getListStoresQueryKey(), staleTime: 300000 } });
+  const { data: recentEntries = [] } = useListStockEntries(
     { store: activeStore, limit: historyLimit },
-    {
-      query: {
-        queryKey: getListStockEntriesQueryKey({ store: activeStore, limit: historyLimit }),
-        refetchInterval: 5000,
-        enabled: Boolean(activeStore),
-      },
-    },
+    { query: { queryKey: getListStockEntriesQueryKey({ store: activeStore, limit: historyLimit }), refetchInterval: 5000, enabled: !!activeStore } }
   );
-  const { data: stockBalances = [], isLoading: isBalanceLoading } = useListStockBalances(
+  const { data: stockBalances = [] } = useListStockBalances(
     { store: activeStore },
-    {
-      query: {
-        queryKey: getListStockBalancesQueryKey({ store: activeStore }),
-        refetchInterval: 5000,
-        enabled: Boolean(activeStore),
-      },
-    },
+    { query: { queryKey: getListStockBalancesQueryKey({ store: activeStore }), refetchInterval: 5000, enabled: !!activeStore } }
   );
 
-  const deleteEntryMutation = useDeleteStockEntry();
-  const deleteEntry = (entry: StockEntry) => {
-    if (!window.confirm(`Hapus catatan ${entry.transaction} ${entry.product} (${entry.quantity} unit)? Saldo akan dihitung ulang.`)) return;
-    deleteEntryMutation.mutate({ id: entry.id }, {
-      onSuccess: () => {
-        queryClient.invalidateQueries({ queryKey: getListStockEntriesQueryKey() });
-        queryClient.invalidateQueries({ queryKey: getListStockBalancesQueryKey() });
-        toast({ title: 'Catatan dihapus', description: 'Saldo toko diperbarui.' });
-      }
-    });
-  };
-
+  // Mutations
   const submitMutation = useCreateStockEntry();
+  const deleteEntryMutation = useDeleteStockEntry();
 
-  const handleAddToCart = () => {
-    const product = products.find(p => p.barcode === selectedBarcode);
-    const hasQuantity = displayQuantity !== '' || secondaryDisplayQuantity !== '' || warehouseQuantity !== '';
-    
-    if (!selectedBarcode || !hasQuantity) {
-      toast({ title: 'Peringatan', description: 'Pilih produk dan isi jumlahnya.', variant: 'destructive' });
-      return;
-    }
+  // Handle klik di luar area pencarian untuk menutup dropdown
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (searchContainerRef.current && !searchContainerRef.current.contains(event.target as Node)) {
+        setShowSearchResults(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
-    if (cart.some(item => item.barcode === selectedBarcode)) {
-      toast({ title: 'Perhatian', description: 'Produk ini sudah ada di keranjang.', variant: 'destructive' });
-      return;
-    }
+  // Logika Pencarian
+  const filteredProducts = useMemo(() => {
+    if (!searchQuery) return [];
+    const lowerQuery = searchQuery.toLowerCase();
+    return products.filter(
+      p => p.name.toLowerCase().includes(lowerQuery) || p.barcode.includes(lowerQuery)
+    ).slice(0, 5); // Batasi 5 hasil agar tidak menutupi layar
+  }, [searchQuery, products]);
 
-    setCart(prev => [...prev, {
-      barcode: selectedBarcode,
-      product: product ? product.name : searchQuery,
-      displayQuantity: Number(displayQuantity || 0),
-      secondaryDisplayQuantity: Number(secondaryDisplayQuantity || 0),
-      warehouseQuantity: Number(warehouseQuantity || 0),
-    }]);
-
-    setSearchQuery('');
-    setSelectedBarcode('');
+  const handleSelectProduct = (product: Product) => {
+    setSelectedProduct(product);
+    setSearchQuery(product.name);
+    setShowSearchResults(false);
     setDisplayQuantity('');
     setSecondaryDisplayQuantity('');
     setWarehouseQuantity('');
-    toast({ title: 'Berhasil', description: 'Produk ditambahkan ke keranjang.' });
   };
 
-  const handleSubmitAll = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!activeStore || cart.length === 0) {
-      toast({ title: 'Peringatan', description: 'Toko atau keranjang belum siap.', variant: 'destructive' });
+  const handleScanSuccess = useCallback((code: string) => {
+    setIsScannerOpen(false);
+    const product = products.find(p => p.barcode === code);
+    if (product) {
+      handleSelectProduct(product);
+      toast({ title: 'Barcode Ditemukan', description: product.name });
+    } else {
+      toast({ title: 'Tidak Dikenali', description: `Barcode ${code} belum terdaftar.`, variant: 'destructive' });
+    }
+  }, [products, toast]);
+
+  const handleAddToCart = () => {
+    if (!selectedProduct) {
+      toast({ title: 'Perhatian', description: 'Pilih produk terlebih dahulu.', variant: 'destructive' });
       return;
     }
+    const dQty = parseInt(displayQuantity || '0', 10);
+    const sQty = parseInt(secondaryDisplayQuantity || '0', 10);
+    const wQty = parseInt(warehouseQuantity || '0', 10);
+
+    if (dQty === 0 && sQty === 0 && wQty === 0) {
+      toast({ title: 'Perhatian', description: 'Isi minimal satu jumlah stok.', variant: 'destructive' });
+      return;
+    }
+
+    const existingIndex = cart.findIndex(item => item.product.barcode === selectedProduct.barcode);
+    if (existingIndex >= 0) {
+      const newCart = [...cart];
+      newCart[existingIndex].displayQuantity += dQty;
+      newCart[existingIndex].secondaryDisplayQuantity += sQty;
+      newCart[existingIndex].warehouseQuantity += wQty;
+      setCart(newCart);
+    } else {
+      setCart([...cart, { product: selectedProduct, displayQuantity: dQty, secondaryDisplayQuantity: sQty, warehouseQuantity: wQty }]);
+    }
+
+    // Reset form
+    setSelectedProduct(null);
+    setSearchQuery('');
+    setDisplayQuantity('');
+    setSecondaryDisplayQuantity('');
+    setWarehouseQuantity('');
+    toast({ title: 'Berhasil', description: 'Ditambahkan ke keranjang.' });
+  };
+
+  const updateCartQty = (index: number, field: keyof Omit<CartItem, 'product'>, delta: number) => {
+    const newCart = [...cart];
+    const newValue = Math.max(0, newCart[index][field] + delta);
+    newCart[index][field] = newValue;
+    if (newCart[index].displayQuantity === 0 && newCart[index].secondaryDisplayQuantity === 0 && newCart[index].warehouseQuantity === 0) {
+      newCart.splice(index, 1);
+    }
+    setCart(newCart);
+  };
+
+  const handleSubmitAll = async () => {
+    if (!activeStore) {
+      toast({ title: 'Peringatan', description: 'Isi Toko Aktif terlebih dahulu.', variant: 'destructive' });
+      return;
+    }
+    if (cart.length === 0) return;
 
     setIsSaving(true);
     let successCount = 0;
 
     try {
       for (const item of cart) {
-        const isAdjustment = transaction === 'Koreksi Stok +' || transaction === 'Koreksi Stok -';
+        const isAdjustment = transaction.includes('Koreksi');
         await submitMutation.mutateAsync({ data: {
           clientId: globalThis.crypto.randomUUID(),
           store: activeStore,
           transaction,
-          product: item.product,
+          product: item.product.name,
           quantity: item.displayQuantity + item.secondaryDisplayQuantity + item.warehouseQuantity,
-          barcode: item.barcode,
+          barcode: item.product.barcode,
           displayQuantity: item.displayQuantity,
           secondaryDisplayQuantity: item.secondaryDisplayQuantity,
           warehouseQuantity: item.warehouseQuantity,
@@ -180,173 +190,236 @@ export default function Home() {
         successCount++;
       }
 
-      toast({ title: 'Berhasil', description: `${successCount} produk disimpan.` });
+      toast({ title: 'Berhasil Disimpan', description: `${successCount} produk telah dicatat ke server.` });
       setCart([]);
       queryClient.invalidateQueries({ queryKey: getListStockEntriesQueryKey() });
       queryClient.invalidateQueries({ queryKey: getListStockBalancesQueryKey() });
     } catch (error: any) {
-      toast({ title: 'Gagal', description: error.message, variant: 'destructive' });
+      toast({ title: 'Gagal Menyimpan', description: error.message || 'Terjadi kesalahan sistem.', variant: 'destructive' });
     } finally {
       setIsSaving(false);
     }
   };
 
-  const handleScanSuccess = useCallback((code: string) => {
-    setIsScannerOpen(false);
-    const product = products.find(p => p.barcode === code);
-    if (product) {
-      setSelectedBarcode(product.barcode);
-      setSearchQuery(product.name);
-      toast({ title: 'Ditemukan', description: product.name });
-    } else {
-      toast({ title: 'Tidak Dikenali', description: code, variant: 'destructive' });
-    }
-  }, [products, toast]);
-
-  const selectedBalance = useMemo<StockBalance | undefined>(
-    () => stockBalances.find((balance) => balance.barcode === selectedBarcode),
-    [selectedBarcode, stockBalances],
-  );
+  const selectedBalance = selectedProduct ? stockBalances.find(b => b.barcode === selectedProduct.barcode) : null;
 
   return (
-    <div className="min-h-[100dvh] w-full bg-background flex flex-col items-center pb-12">
-      <header className="w-full max-w-md bg-primary text-primary-foreground pt-10 pb-6 px-6 shadow-md rounded-b-3xl mb-6 sticky top-0 z-10">
-        <div className="flex justify-between items-start mb-2">
+    <div className="min-h-[100dvh] w-full bg-slate-50 dark:bg-slate-950 flex flex-col items-center pb-24">
+      {/* HEADER */}
+      <header className="w-full max-w-md bg-emerald-900 text-white pt-12 pb-6 px-6 shadow-lg rounded-b-[2rem] mb-6 sticky top-0 z-20">
+        <div className="flex justify-between items-start mb-4">
           <div>
-            <h1 className="text-2xl font-serif font-bold tracking-tight">Erlangga</h1>
-            <nav className="mt-4 flex flex-wrap gap-2">
-              <Link href="/operasional" className="rounded-lg bg-white/15 px-3 py-1.5 text-xs font-semibold">Kunjungan</Link>
-              <Link href="/dashboard" className="rounded-lg bg-white/15 px-3 py-1.5 text-xs font-semibold">Laporan</Link>
-            </nav>
+            <h1 className="text-3xl font-serif font-bold tracking-tight">Erlangga</h1>
+            <p className="text-emerald-100/80 text-sm mt-1">Sistem Pencatatan Stok</p>
           </div>
           <ThemeToggle />
         </div>
+        <div className="flex gap-2">
+          <Link href="/operasional" className="flex-1 bg-white/10 hover:bg-white/20 transition-colors rounded-xl py-2 text-center text-xs font-semibold">Kunjungan SO</Link>
+          <Link href="/dashboard" className="flex-1 bg-white/10 hover:bg-white/20 transition-colors rounded-xl py-2 text-center text-xs font-semibold">Laporan</Link>
+        </div>
       </header>
 
-      <main className="w-full max-w-md px-4 flex-1 flex flex-col gap-6">
-        <div className="bg-card border border-border shadow-sm rounded-2xl p-5">
-          <form className="flex flex-col gap-5">
-            <div className="space-y-1.5">
-               <label className="text-sm font-semibold flex items-center gap-2"><Box size={16} /> Toko Aktif</label>
-              <input
-                list="known-stores-home"
-                value={storeName}
-                onChange={(e) => setStoreName(e.target.value)}
-                className="w-full px-4 py-2.5 bg-background border border-border rounded-xl text-sm font-medium"
-                placeholder="Contoh: Toko Sentosa"
-              />
-              <datalist id="known-stores-home">
-                {(storesQuery.data ?? []).map((store) => <option key={store.name} value={store.name} />)}
-              </datalist>
+      <main className="w-full max-w-md px-4 flex flex-col gap-5">
+        
+        {/* FORM INPUT */}
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm rounded-2xl p-5">
+          <div className="space-y-4">
+            
+            {/* Toko & Transaksi */}
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <label className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1"><Box size={12} /> Toko</label>
+                <input list="stores" value={storeName} onChange={e => setStoreName(e.target.value)} placeholder="Nama Toko" className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg text-sm font-medium focus:ring-2 focus:ring-emerald-500 outline-none" />
+                <datalist id="stores">{(storesQuery.data ?? []).map(s => <option key={s.name} value={s.name} />)}</datalist>
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1"><RefreshCw size={12} /> Transaksi</label>
+                <select value={transaction} onChange={e => setTransaction(e.target.value)} className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg text-sm font-medium focus:ring-2 focus:ring-emerald-500 outline-none appearance-none">
+                  {TRANSACTIONS.map(t => <option key={t} value={t}>{t}</option>)}
+                </select>
+              </div>
             </div>
 
-            <div className="space-y-1.5">
-              <label className="text-sm font-semibold flex items-center gap-2"><RefreshCw size={16} /> Tipe Transaksi</label>
-              <select
-                value={transaction}
-                onChange={(e) => setTransaction(e.target.value)}
-                className="w-full px-4 py-2.5 bg-background border border-border rounded-xl text-sm font-medium"
-              >
-                {TRANSACTIONS.map(t => <option key={t} value={t}>{t}</option>)}
-              </select>
-            </div>
-
-            {/* FITUR PENCARIAN YANG SUDAH DISAMAKAN DENGAN KUNJUNGAN */}
-            <div className="space-y-1.5">
-              <label className="text-sm font-semibold flex items-center gap-2"><Search size={16} /> Cari / Scan Produk</label>
+            {/* Pencarian Kustom */}
+            <div className="space-y-1 relative" ref={searchContainerRef}>
+              <label className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1"><Search size={12} /> Cari Produk</label>
               <div className="flex gap-2">
                 <div className="relative flex-1">
                   <input
-                    list="product-list-home"
+                    type="text"
                     value={searchQuery}
-                    onChange={(e) => {
-                      setSearchQuery(e.target.value);
-                      // Logika pencarian sama seperti Kunjungan
-                      const match = products.find(p => p.barcode === e.target.value.trim() || p.name.toLowerCase() === e.target.value.toLowerCase());
-                      setSelectedBarcode(match ? match.barcode : '');
-                    }}
-                    placeholder="Ketik nama / barcode..."
-                    className="w-full h-[46px] px-4 bg-background border border-border rounded-xl text-sm"
+                    onChange={(e) => { setSearchQuery(e.target.value); setSelectedProduct(null); setShowSearchResults(true); }}
+                    onFocus={() => setShowSearchResults(true)}
+                    placeholder="Ketik nama atau scan barcode..."
+                    className="w-full pl-9 pr-8 py-2.5 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg text-sm font-medium focus:ring-2 focus:ring-emerald-500 outline-none"
                   />
-                  <datalist id="product-list-home">
-                    {products.map(p => (
-                      <option key={p.barcode} value={p.barcode} label={p.name} />
-                    ))}
-                  </datalist>
+                  <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                  {searchQuery && (
+                    <button onClick={() => { setSearchQuery(''); setSelectedProduct(null); }} className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-600">
+                      <X size={14} />
+                    </button>
+                  )}
                 </div>
-                <button type="button" onClick={() => setIsScannerOpen(true)} className="flex-none w-[46px] h-[46px] bg-accent text-accent-foreground rounded-xl flex items-center justify-center">
-                  <Camera size={22} />
+                <button onClick={() => setIsScannerOpen(true)} className="flex-none px-3 bg-emerald-100 text-emerald-700 hover:bg-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-400 rounded-lg flex items-center justify-center transition-colors">
+                  <Camera size={20} />
                 </button>
               </div>
-              {selectedBalance && <p className="text-xs text-primary font-semibold px-1">Saldo: {selectedBalance.totalQuantity}</p>}
+
+              {/* Dropdown Hasil Pencarian */}
+              {showSearchResults && searchQuery && !selectedProduct && (
+                <div className="absolute top-full left-0 right-0 mt-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl z-50 overflow-hidden">
+                  {filteredProducts.length === 0 ? (
+                    <div className="p-4 text-center text-sm text-slate-500">Produk tidak ditemukan.</div>
+                  ) : (
+                    <ul className="max-h-60 overflow-y-auto">
+                      {filteredProducts.map(p => (
+                        <li key={p.barcode} onClick={() => handleSelectProduct(p)} className="px-4 py-3 border-b border-slate-100 dark:border-slate-700 last:border-0 hover:bg-slate-50 dark:hover:bg-slate-700 cursor-pointer flex flex-col">
+                          <span className="font-semibold text-sm text-slate-800 dark:text-slate-100">{p.name}</span>
+                          <span className="text-xs text-slate-500 font-mono mt-0.5">{p.barcode}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
             </div>
 
-            <div className="space-y-3">
-              <p className="text-sm font-semibold">Jumlah stok</p>
-              <div className="grid grid-cols-3 gap-2.5">
-                {[
-                  ['displayQuantity', 'Display', displayQuantity, setDisplayQuantity],
-                  ['secondaryDisplayQuantity', 'Secondary', secondaryDisplayQuantity, setSecondaryDisplayQuantity],
-                  ['warehouseQuantity', 'Gudang', warehouseQuantity, setWarehouseQuantity],
-                ].map(([id, label, value, setValue]: any) => (
-                  <label key={id} className="space-y-1.5">
-                    <span className="block text-xs font-semibold text-muted-foreground">{label}</span>
-                    <input type="number" min="0" value={value} onChange={(e) => setValue(e.target.value ? parseInt(e.target.value, 10) : '')} className="w-full rounded-xl border border-border bg-background px-2 py-3 text-center text-lg font-bold" placeholder="0" />
-                  </label>
-                ))}
+            {/* Tampilan Produk Terpilih & Input Qty */}
+            {selectedProduct && (
+              <div className="p-3 bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-100 dark:border-emerald-800 rounded-xl space-y-3 animate-in fade-in slide-in-from-top-2">
+                <div className="flex justify-between items-start">
+                  <div>
+                    <p className="text-sm font-bold text-emerald-900 dark:text-emerald-100">{selectedProduct.name}</p>
+                    <p className="text-xs text-emerald-600 dark:text-emerald-400 font-mono">{selectedProduct.barcode}</p>
+                  </div>
+                  {selectedBalance && (
+                    <span className="text-xs font-semibold bg-emerald-200 dark:bg-emerald-800 px-2 py-1 rounded-md text-emerald-800 dark:text-emerald-200">
+                      Sisa: {selectedBalance.totalQuantity}
+                    </span>
+                  )}
+                </div>
+                
+                <div className="grid grid-cols-3 gap-2">
+                  {[
+                    ['display', 'Display', displayQuantity, setDisplayQuantity],
+                    ['secondary', 'Secondary', secondaryDisplayQuantity, setSecondaryDisplayQuantity],
+                    ['gudang', 'Gudang', warehouseQuantity, setWarehouseQuantity]
+                  ].map(([key, label, val, setVal]: any) => (
+                    <div key={key} className="space-y-1">
+                      <label className="text-[10px] font-bold text-emerald-700 dark:text-emerald-300 text-center block">{label}</label>
+                      <input type="number" min="0" placeholder="0" value={val} onChange={e => setVal(e.target.value)} className="w-full text-center py-2 bg-white dark:bg-slate-950 border border-emerald-200 dark:border-emerald-800 rounded-lg font-bold text-lg outline-none focus:ring-2 focus:ring-emerald-500" />
+                    </div>
+                  ))}
+                </div>
+                
+                <button onClick={handleAddToCart} className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-bold rounded-lg flex items-center justify-center gap-2 transition-colors">
+                  <Plus size={16} /> Tambah ke Keranjang
+                </button>
               </div>
-            </div>
-
-            <button type="button" onClick={handleAddToCart} className="w-full py-3 bg-secondary text-secondary-foreground font-semibold rounded-xl flex items-center justify-center gap-2">
-              <Plus size={20} /> Tambah ke Keranjang
-            </button>
-          </form>
+            )}
+          </div>
         </div>
 
-        <div className="bg-card border border-border shadow-sm rounded-2xl p-5">
+        {/* KERANJANG */}
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm rounded-2xl p-5">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="font-serif text-lg font-bold flex items-center gap-2"><ShoppingCart size={18} /> Keranjang</h2>
-            <span className="text-xs font-semibold bg-muted px-2 py-1 rounded-full">{cart.length} SKU</span>
+            <h2 className="font-serif text-lg font-bold flex items-center gap-2"><ShoppingCart size={18} className="text-emerald-600" /> Keranjang</h2>
+            <span className="text-xs font-bold bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 px-2.5 py-1 rounded-full">{cart.length} Item</span>
           </div>
           
           {cart.length === 0 ? (
-            <div className="text-center py-6 border border-dashed rounded-xl text-muted-foreground text-sm">Belum ada barang.</div>
+            <div className="flex flex-col items-center justify-center py-8 text-slate-400">
+              <ShoppingCart size={32} className="mb-2 opacity-20" />
+              <p className="text-sm">Belum ada barang di keranjang.</p>
+            </div>
           ) : (
-            <ul className="space-y-3 mb-4">
-              {cart.map((item, idx) => (
-                <li key={idx} className="flex justify-between items-center bg-muted/30 p-3 rounded-xl border border-border">
-                  <div>
-                    <p className="text-sm font-semibold">{item.product}</p>
-                    <p className="text-xs text-muted-foreground">D: {item.displayQuantity} | S: {item.secondaryDisplayQuantity} | G: {item.warehouseQuantity}</p>
+            <div className="space-y-3 mb-5">
+              {cart.map((item, idx) => {
+                const total = item.displayQuantity + item.secondaryDisplayQuantity + item.warehouseQuantity;
+                return (
+                  <div key={idx} className="bg-slate-50 dark:bg-slate-950 p-3 rounded-xl border border-slate-200 dark:border-slate-800 flex flex-col gap-2">
+                    <div className="flex justify-between items-start">
+                      <div>
+                        <p className="font-semibold text-sm text-slate-800 dark:text-slate-100">{item.product.name}</p>
+                        <p className="text-[11px] text-slate-500 font-mono mt-0.5">{item.product.barcode}</p>
+                      </div>
+                      <button onClick={() => setCart(cart.filter((_, i) => i !== idx))} className="text-red-500 p-1 hover:bg-red-50 dark:hover:bg-red-900/20 rounded">
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                    
+                    <div className="flex items-center gap-2 mt-1">
+                      {/* Display Qty */}
+                      <div className="flex-1 flex flex-col items-center bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-1">
+                        <span className="text-[9px] font-bold text-slate-400 uppercase">Dsp</span>
+                        <div className="flex items-center justify-between w-full mt-1">
+                          <button onClick={() => updateCartQty(idx, 'displayQuantity', -1)} className="p-1 text-slate-400 hover:text-slate-800"><Minus size={12} /></button>
+                          <span className="font-bold text-sm">{item.displayQuantity}</span>
+                          <button onClick={() => updateCartQty(idx, 'displayQuantity', 1)} className="p-1 text-slate-400 hover:text-slate-800"><Plus size={12} /></button>
+                        </div>
+                      </div>
+                      {/* Sec Qty */}
+                      <div className="flex-1 flex flex-col items-center bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-1">
+                        <span className="text-[9px] font-bold text-slate-400 uppercase">Sec</span>
+                        <div className="flex items-center justify-between w-full mt-1">
+                          <button onClick={() => updateCartQty(idx, 'secondaryDisplayQuantity', -1)} className="p-1 text-slate-400 hover:text-slate-800"><Minus size={12} /></button>
+                          <span className="font-bold text-sm">{item.secondaryDisplayQuantity}</span>
+                          <button onClick={() => updateCartQty(idx, 'secondaryDisplayQuantity', 1)} className="p-1 text-slate-400 hover:text-slate-800"><Plus size={12} /></button>
+                        </div>
+                      </div>
+                      {/* Gudang Qty */}
+                      <div className="flex-1 flex flex-col items-center bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-1">
+                        <span className="text-[9px] font-bold text-slate-400 uppercase">Gdg</span>
+                        <div className="flex items-center justify-between w-full mt-1">
+                          <button onClick={() => updateCartQty(idx, 'warehouseQuantity', -1)} className="p-1 text-slate-400 hover:text-slate-800"><Minus size={12} /></button>
+                          <span className="font-bold text-sm">{item.warehouseQuantity}</span>
+                          <button onClick={() => updateCartQty(idx, 'warehouseQuantity', 1)} className="p-1 text-slate-400 hover:text-slate-800"><Plus size={12} /></button>
+                        </div>
+                      </div>
+                    </div>
                   </div>
-                  <button onClick={() => setCart(cart.filter((_, i) => i !== idx))} className="text-destructive p-1.5"><Trash2 size={16} /></button>
-                </li>
-              ))}
-            </ul>
+                );
+              })}
+            </div>
           )}
 
-          <button onClick={handleSubmitAll} disabled={isSaving || cart.length === 0} className="w-full py-3.5 bg-primary text-primary-foreground font-semibold rounded-xl flex items-center justify-center gap-2 disabled:opacity-50">
-            {isSaving ? 'Menyimpan...' : <><Send size={20} /> Simpan Semua</>}
+          <button
+            onClick={handleSubmitAll}
+            disabled={isSaving || cart.length === 0}
+            className="w-full py-3.5 bg-emerald-900 hover:bg-emerald-950 text-white font-bold rounded-xl flex items-center justify-center gap-2 disabled:opacity-50 transition-all shadow-lg shadow-emerald-900/20"
+          >
+            {isSaving ? 'Menyimpan Data...' : <><Send size={18} /> Simpan ke Database</>}
           </button>
         </div>
 
-        <section className="bg-card border border-border shadow-sm rounded-2xl p-5">
-          <h2 className="font-serif text-lg font-bold mb-4">Riwayat</h2>
+        <ProductManager products={products} onAdd={addProduct} onRemove={removeProduct} onUpdate={updateProduct} onReplace={replaceProducts} />
+
+        {/* RIWAYAT */}
+        <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm rounded-2xl p-5">
+          <h2 className="font-serif text-lg font-bold flex items-center gap-2 mb-4"><Cloud size={18} className="text-emerald-600" /> Riwayat Transaksi</h2>
           {recentEntries.length === 0 ? (
-            <p className="text-center text-sm text-muted-foreground py-4">Belum ada transaksi.</p>
+            <p className="text-center text-sm text-slate-500 py-4">Belum ada transaksi tercatat.</p>
           ) : (
             <div className="space-y-3">
-              {recentEntries.map((entry) => (
-                <div key={entry.id} className="rounded-xl border border-border p-3 flex justify-between items-center">
+              {recentEntries.map((entry: any) => (
+                <div key={entry.id} className="rounded-xl border border-slate-100 dark:border-slate-800 p-3 flex justify-between items-center bg-slate-50 dark:bg-slate-950/50">
                   <div>
-                    <p className="text-sm font-semibold">{entry.product}</p>
-                    <p className="text-xs text-muted-foreground">{entry.transaction} · {entry.quantity} stok</p>
+                    <p className="text-sm font-bold text-slate-800 dark:text-slate-200">{entry.product}</p>
+                    <p className="text-xs text-slate-500 mt-0.5">{entry.transaction} · {entry.quantity} unit</p>
                   </div>
-                   <button onClick={() => deleteEntry(entry)} className="p-2 text-muted-foreground"><Trash2 size={14} /></button>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] uppercase font-bold text-emerald-600 bg-emerald-100 dark:bg-emerald-900/30 px-2 py-0.5 rounded-full">Tersimpan</span>
+                    <button onClick={() => deleteEntry(entry)} className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors">
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
                 </div>
               ))}
               {recentEntries.length >= historyLimit && (
-                <button onClick={() => setHistoryLimit(prev => prev + 5)} className="w-full mt-2 py-2 text-sm font-semibold text-primary border border-primary/30 rounded-xl">Muat Lebih Banyak</button>
+                <button onClick={() => setHistoryLimit(prev => prev + 5)} className="w-full py-2.5 mt-2 text-sm font-bold text-emerald-700 dark:text-emerald-400 border-2 border-emerald-100 dark:border-emerald-900/50 rounded-xl hover:bg-emerald-50 dark:hover:bg-emerald-900/20 transition-colors">
+                  Muat Lebih Banyak
+                </button>
               )}
             </div>
           )}
