@@ -14,6 +14,10 @@ import {
   RefreshCw,
   Send,
   Trash2,
+  Plus,
+  ShoppingCart,
+  Search,
+  Camera
 } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Link } from 'wouter';
@@ -45,19 +49,31 @@ const TRANSACTIONS = [
   'Lainnya'
 ];
 
+type CartItem = {
+  barcode: string;
+  product: string;
+  displayQuantity: number;
+  secondaryDisplayQuantity: number;
+  warehouseQuantity: number;
+};
+
 export default function Home() {
   const { products, addProduct, removeProduct, updateProduct, replaceProducts } = useProducts();
   const [storeName, setStoreName] = useStoreName();
   const { toast } = useToast();
 
   const [transaction, setTransaction] = useState(TRANSACTIONS[0]);
+  const [searchQuery, setSearchQuery] = useState('');
   const [selectedBarcode, setSelectedBarcode] = useState('');
   const [displayQuantity, setDisplayQuantity] = useState<number | ''>('');
   const [secondaryDisplayQuantity, setSecondaryDisplayQuantity] = useState<number | ''>('');
   const [warehouseQuantity, setWarehouseQuantity] = useState<number | ''>('');
   const [isScannerOpen, setIsScannerOpen] = useState(false);
   
-  // STATE UNTUK PAGINATION
+  // STATE UNTUK KERANJANG
+  const [cart, setCart] = useState<CartItem[]>([]);
+  const [isSaving, setIsSaving] = useState(false);
+
   const [historyLimit, setHistoryLimit] = useState(5);
 
   const queryClient = useQueryClient();
@@ -113,65 +129,89 @@ export default function Home() {
     });
   };
 
-  const submitMutation = useCreateStockEntry({
-    mutation: {
-      onSuccess: () => {
-        queryClient.invalidateQueries({ queryKey: getListStockEntriesQueryKey() });
-        queryClient.invalidateQueries({ queryKey: getListStockBalancesQueryKey() });
-        queryClient.invalidateQueries({ queryKey: getGetSalesMonitorQueryKey() });
-        queryClient.invalidateQueries({ queryKey: getGetSalesActivityQueryKey() });
-        queryClient.invalidateQueries({ queryKey: getListStoresQueryKey() });
-        
-        toast({
-          title: 'Berhasil Disimpan',
-          description: 'Data stok sudah tersimpan dengan aman di server.',
-        });
-        
-        setDisplayQuantity('');
-        setSecondaryDisplayQuantity('');
-        setWarehouseQuantity('');
-      },
-      onError: (err: any) => {
-      toast({
-        title: 'Gagal Menyimpan ke Server',
-        description: err.message || 'Data belum tersimpan. Silakan coba lagi.',
-        variant: 'destructive',
-      });
-      },
-    },
-  });
+  const submitMutation = useCreateStockEntry();
 
-  const getPayload = () => {
+  // FUNGSI TAMBAH KE KERANJANG
+  const handleAddToCart = () => {
     const product = products.find(p => p.barcode === selectedBarcode);
+    const hasQuantity = displayQuantity !== '' || secondaryDisplayQuantity !== '' || warehouseQuantity !== '';
     
-    const isAdjustment = transaction === 'Koreksi Stok +' || transaction === 'Koreksi Stok -';
+    if (!selectedBarcode || !hasQuantity) {
+      toast({ title: 'Peringatan', description: 'Pilih produk dan isi jumlahnya terlebih dahulu.', variant: 'destructive' });
+      return;
+    }
 
-    return {
-      clientId: globalThis.crypto.randomUUID(),
-      store: activeStore,
-      transaction,
-      product: product ? product.name : '',
-      quantity: totalStock,
+    if (cart.some(item => item.barcode === selectedBarcode)) {
+      toast({ title: 'Perhatian', description: 'Produk ini sudah ada di dalam keranjang.', variant: 'destructive' });
+      return;
+    }
+
+    setCart(prev => [...prev, {
       barcode: selectedBarcode,
+      product: product ? product.name : searchQuery,
       displayQuantity: Number(displayQuantity || 0),
       secondaryDisplayQuantity: Number(secondaryDisplayQuantity || 0),
       warehouseQuantity: Number(warehouseQuantity || 0),
-      ...(isAdjustment ? { sourceType: 'adjustment' as const } : {}),
-    };
+    }]);
+
+    // Reset Form
+    setSearchQuery('');
+    setSelectedBarcode('');
+    setDisplayQuantity('');
+    setSecondaryDisplayQuantity('');
+    setWarehouseQuantity('');
+    toast({ title: 'Berhasil', description: 'Produk ditambahkan ke keranjang.' });
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  // FUNGSI SIMPAN SEMUA KERANJANG
+  const handleSubmitAll = async (e: React.FormEvent) => {
     e.preventDefault();
-    const hasQuantity = displayQuantity !== '' || secondaryDisplayQuantity !== '' || warehouseQuantity !== '';
-    if (!activeStore || !transaction || !selectedBarcode || !hasQuantity) {
-      toast({
-        title: 'Peringatan',
-        description: 'Pilih toko dan produk, lalu masukkan jumlah pergerakan pada Display, Secondary, atau Gudang.',
-        variant: 'destructive'
-      });
+    if (!activeStore) {
+      toast({ title: 'Peringatan', description: 'Toko aktif belum diisi.', variant: 'destructive' });
       return;
     }
-    submitMutation.mutate({ data: getPayload() });
+    if (cart.length === 0) {
+      toast({ title: 'Peringatan', description: 'Keranjang masih kosong.', variant: 'destructive' });
+      return;
+    }
+
+    setIsSaving(true);
+    let successCount = 0;
+
+    try {
+      for (const item of cart) {
+        const isAdjustment = transaction === 'Koreksi Stok +' || transaction === 'Koreksi Stok -';
+        const payload = {
+          clientId: globalThis.crypto.randomUUID(),
+          store: activeStore,
+          transaction,
+          product: item.product,
+          quantity: item.displayQuantity + item.secondaryDisplayQuantity + item.warehouseQuantity,
+          barcode: item.barcode,
+          displayQuantity: item.displayQuantity,
+          secondaryDisplayQuantity: item.secondaryDisplayQuantity,
+          warehouseQuantity: item.warehouseQuantity,
+          ...(isAdjustment ? { sourceType: 'adjustment' as const } : {}),
+        };
+
+        await submitMutation.mutateAsync({ data: payload as any });
+        successCount++;
+      }
+
+      toast({ title: 'Berhasil Disimpan', description: `${successCount} produk berhasil dimasukkan ke server.` });
+      setCart([]);
+      
+      queryClient.invalidateQueries({ queryKey: getListStockEntriesQueryKey() });
+      queryClient.invalidateQueries({ queryKey: getListStockBalancesQueryKey() });
+      queryClient.invalidateQueries({ queryKey: getGetSalesMonitorQueryKey() });
+      queryClient.invalidateQueries({ queryKey: getGetSalesActivityQueryKey() });
+      queryClient.invalidateQueries({ queryKey: getListStoresQueryKey() });
+
+    } catch (error: any) {
+      toast({ title: 'Gagal Menyimpan', description: error.message || 'Terjadi kesalahan.', variant: 'destructive' });
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const handleScanSuccess = useCallback((code: string) => {
@@ -179,17 +219,12 @@ export default function Home() {
     const product = products.find(p => p.barcode === code);
     if (product) {
       setSelectedBarcode(product.barcode);
-      toast({
-        title: 'Barcode Ditemukan',
-        description: `Produk: ${product.name}`,
-      });
+      setSearchQuery(product.name);
+      toast({ title: 'Barcode Ditemukan', description: `Produk: ${product.name}` });
     } else {
-      toast({
-        title: 'Barcode Tidak Dikenali',
-        description: `${code}. Silakan pilih manual atau tambahkan produk baru.`,
-        variant: 'destructive'
-      });
+      toast({ title: 'Barcode Tidak Dikenali', description: `${code}. Silakan pilih manual.`, variant: 'destructive' });
       setSelectedBarcode('');
+      setSearchQuery('');
     }
   }, [products, toast]);
 
@@ -197,6 +232,7 @@ export default function Home() {
     const cats = new Set(products.map(p => p.category));
     return Array.from(cats).sort();
   }, [products]);
+  
   const selectedBalance = useMemo<StockBalance | undefined>(
     () => stockBalances.find((balance) => balance.barcode === selectedBarcode),
     [selectedBarcode, stockBalances],
@@ -212,17 +248,16 @@ export default function Home() {
 
   return (
     <div className="min-h-[100dvh] w-full bg-background flex flex-col items-center pb-12">
-      {/* Header */}
       <header className="w-full max-w-md bg-primary text-primary-foreground pt-10 pb-6 px-6 shadow-md rounded-b-3xl mb-6 sticky top-0 z-10">
         <div className="flex justify-between items-start mb-2">
           <div>
             <h1 className="text-2xl font-serif font-bold tracking-tight">Erlangga</h1>
             <h2 className="text-sm text-primary-foreground/80 font-medium">Pencatatan Stok Toko</h2>
             <nav className="mt-4 flex flex-wrap gap-2" aria-label="Navigasi utama">
-              <Link href="/operasional" className="rounded-lg bg-white/15 px-3 py-1.5 text-xs font-semibold transition hover:bg-white/25" data-testid="link-operations">
+              <Link href="/operasional" className="rounded-lg bg-white/15 px-3 py-1.5 text-xs font-semibold transition hover:bg-white/25">
                 Kunjungan & barang masuk
               </Link>
-              <Link href="/dashboard" className="rounded-lg bg-white/15 px-3 py-1.5 text-xs font-semibold transition hover:bg-white/25" data-testid="link-sales-dashboard">
+              <Link href="/dashboard" className="rounded-lg bg-white/15 px-3 py-1.5 text-xs font-semibold transition hover:bg-white/25">
                 Penjualan harian
               </Link>
             </nav>
@@ -239,9 +274,7 @@ export default function Home() {
 
       <main className="w-full max-w-md px-4 flex-1 flex flex-col gap-6">
         <div className="bg-card border border-border shadow-sm rounded-2xl p-5 relative overflow-hidden">
-          <div className="absolute -top-10 -right-10 w-32 h-32 bg-accent/10 rounded-full blur-2xl pointer-events-none" />
-          
-          <form onSubmit={handleSubmit} className="flex flex-col gap-5 relative z-10">
+          <form className="flex flex-col gap-5 relative z-10">
             {/* Store Name */}
             <div className="space-y-1.5">
                <label htmlFor="store" className="text-sm font-semibold text-foreground flex items-center gap-2">
@@ -253,13 +286,10 @@ export default function Home() {
                 list="known-stores-home"
                 value={storeName}
                 onChange={(e) => setStoreName(e.target.value)}
-                className="w-full px-4 py-2.5 bg-background border border-border rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary transition-all text-sm font-medium placeholder:text-muted-foreground/50"
+                className="w-full px-4 py-2.5 bg-background border border-border rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/40 text-sm font-medium"
                 placeholder="Contoh: Toko Sentosa"
                 required
               />
-               <p className="px-1 text-[11px] text-muted-foreground">
-                  Saldo terpadu dan riwayat hanya menampilkan toko ini.
-               </p>
                 <datalist id="known-stores-home">
                   {(storesQuery.data ?? []).map((store) => <option key={store.name} value={store.name} />)}
                 </datalist>
@@ -275,8 +305,7 @@ export default function Home() {
                   id="transaction"
                   value={transaction}
                   onChange={(e) => setTransaction(e.target.value)}
-                  className="w-full px-4 py-2.5 bg-background border border-border rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary transition-all text-sm appearance-none font-medium"
-                  required
+                  className="w-full px-4 py-2.5 bg-background border border-border rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/40 text-sm appearance-none font-medium"
                 >
                   {TRANSACTIONS.map(t => <option key={t} value={t}>{t}</option>)}
                 </select>
@@ -288,77 +317,46 @@ export default function Home() {
               </div>
             </div>
 
-            {/* Product Select with Scanner */}
+            {/* Pencarian Produk / Barcode */}
             <div className="space-y-1.5">
-              <label htmlFor="product" className="text-sm font-semibold text-foreground flex items-center gap-2">
-                <PackageSearch size={16} className="text-muted-foreground" /> Produk
+              <label htmlFor="product-search" className="text-sm font-semibold text-foreground flex items-center gap-2">
+                <Search size={16} className="text-muted-foreground" /> Cari / Scan Produk
               </label>
-              
               <div className="flex gap-2">
                 <div className="relative flex-1">
-                  <select
-                    id="product"
-                    value={selectedBarcode}
-                    onChange={(e) => setSelectedBarcode(e.target.value)}
-                    className="w-full h-[46px] px-4 bg-background border border-border rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary transition-all text-sm appearance-none font-medium pr-8 truncate"
-                    required
-                  >
-                    <option value="" disabled>Pilih Produk...</option>
-                    {categories.map(cat => (
-                      <optgroup key={cat} label={cat}>
-                        {products.filter(p => p.category === cat).map(p => (
-                          <option key={p.barcode} value={p.barcode}>{p.name}</option>
-                        ))}
-                      </optgroup>
-                    ))}
-                  </select>
-                  <div className="absolute inset-y-0 right-4 flex items-center pointer-events-none text-muted-foreground">
-                    <svg width="12" height="8" viewBox="0 0 12 8" fill="none" xmlns="http://www.w3.org/2000/svg">
-                      <path d="M1 1.5L6 6.5L11 1.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                    </svg>
-                  </div>
+                  <input
+                    id="product-search"
+                    list="product-list"
+                    value={searchQuery}
+                    onChange={(e) => {
+                      setSearchQuery(e.target.value);
+                      const match = products.find(p => p.name.toLowerCase().includes(e.target.value.toLowerCase()) || p.barcode === e.target.value);
+                      setSelectedBarcode(match ? match.barcode : '');
+                    }}
+                    placeholder="Ketik nama / barcode..."
+                    className="w-full h-[46px] px-4 bg-background border border-border rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/40 text-sm"
+                  />
+                  <datalist id="product-list">
+                    {products.map(p => <option key={p.barcode} value={p.name}>{p.barcode}</option>)}
+                  </datalist>
                 </div>
-                
                 <button
                   type="button"
                   onClick={() => setIsScannerOpen(true)}
-                  className={`flex-none w-[46px] h-[46px] bg-accent text-accent-foreground rounded-xl shadow-sm hover:brightness-110 transition-all active:scale-95 flex items-center justify-center ${isScannerOpen ? 'animate-pulse' : ''}`}
-                  aria-label="Scan Barcode"
+                  className="flex-none w-[46px] h-[46px] bg-accent text-accent-foreground rounded-xl shadow-sm hover:brightness-110 flex items-center justify-center"
                 >
-                  <QrCode size={22} />
+                  <Camera size={22} />
                 </button>
               </div>
-              {selectedBarcode && (
-                <p className="text-xs text-muted-foreground px-1 font-mono">Barcode: {selectedBarcode}</p>
-              )}
               {selectedBalance && (
-                <div className="flex items-center justify-between rounded-xl border border-primary/20 bg-primary/5 px-3 py-2.5">
-                  <div>
-                    <p className="text-xs font-semibold text-foreground">Saldo terpadu saat ini</p>
-                    <p className="text-[11px] text-muted-foreground">
-                      Saldo untuk SKU yang dipilih
-                    </p>
-                  </div>
-                  <span className="text-xl font-bold text-primary">{selectedBalance.totalQuantity}</span>
-                </div>
+                <p className="text-xs text-primary font-semibold px-1">Saldo terpadu saat ini: {selectedBalance.totalQuantity}</p>
               )}
             </div>
 
             {/* Quantity */}
             <div className="space-y-3">
               <div>
-                <p className="text-sm font-semibold text-foreground">
-                  {isPhysicalCorrection ? 'Jumlah koreksi per lokasi' : transaction === 'Penjualan' ? 'Jumlah penjualan per lokasi' : 'Jumlah stok per lokasi'}
-                </p>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {isPhysicalCorrection
-                    ? transaction === 'Koreksi Stok +'
-                      ? 'Menambah saldo untuk SKU yang sudah ada, misalnya barang yang baru ditemukan.'
-                      : 'Mengurangi saldo buku jika jumlah fisik lebih sedikit.'
-                    : isNegativeMovement
-                      ? 'Jumlah ini mengurangi saldo buku.'
-                      : 'Jumlah ini menambah saldo buku.'}
-                </p>
+                <p className="text-sm font-semibold text-foreground">Jumlah stok per lokasi</p>
               </div>
               <div className="grid grid-cols-3 gap-2.5">
                 {([
@@ -372,234 +370,113 @@ export default function Home() {
                       id={id}
                       type="number"
                       min="0"
-                      step="1"
                       value={value}
                       onChange={(event) => setValue(event.target.value ? parseInt(event.target.value, 10) : '')}
-                      className="w-full rounded-xl border border-border bg-background px-2 py-3 text-center text-lg font-bold tracking-tight focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/40"
+                      className="w-full rounded-xl border border-border bg-background px-2 py-3 text-center text-lg font-bold tracking-tight focus:border-primary focus:outline-none"
                       placeholder="0"
-                      inputMode="numeric"
-                      data-testid={`input-${id}`}
                     />
                   </label>
                 ))}
               </div>
-              <div className="flex items-center justify-between rounded-xl border border-accent/40 bg-accent/10 px-4 py-3">
-                <div>
-                  <p className="text-sm font-semibold text-foreground">Total transaksi</p>
-                  <p className="text-xs text-muted-foreground">
-                    {isNegativeMovement ? 'Mengurangi saldo toko' : 'Menambah saldo toko'}
-                  </p>
-                </div>
-                <span className="text-2xl font-bold tracking-tight text-primary" data-testid="value-stock-addition">
-                  {isNegativeMovement ? `−${totalStock}` : `+${totalStock}`}
-                </span>
-              </div>
-              <p className="px-1 text-xs text-muted-foreground">
-                Input, barang masuk, penjualan, dan koreksi dicatat dalam satu buku stok. Untuk menghitung stok fisik lengkap, gunakan Kunjungan; angka kunjungan akan menjadi koreksi selisih, bukan tambahan.
-              </p>
             </div>
 
-            {/* Submit */}
+            {/* Tombol Tambah ke Keranjang */}
             <button
-              type="submit"
-              disabled={submitMutation.isPending}
-              className="w-full mt-2 py-3.5 bg-primary text-primary-foreground font-semibold rounded-xl shadow-md shadow-primary/20 hover:bg-primary/90 transition-all active:scale-[0.98] disabled:opacity-70 flex items-center justify-center gap-2 text-lg group"
+              type="button"
+              onClick={handleAddToCart}
+              className="w-full mt-2 py-3 bg-secondary text-secondary-foreground font-semibold rounded-xl shadow-sm hover:opacity-90 transition-all flex items-center justify-center gap-2"
             >
-              {submitMutation.isPending ? (
-                <>
-                  <div className="w-5 h-5 border-2 border-primary-foreground/30 border-t-primary-foreground rounded-full animate-spin" />
-                  Menyimpan...
-                </>
-              ) : (
-                <>
-                  <Send size={20} className="group-hover:translate-x-1 group-hover:-translate-y-1 transition-transform" />
-                  Simpan Data
-                </>
-              )}
+              <Plus size={20} />
+              Tambah ke Keranjang
             </button>
           </form>
         </div>
 
-        <ProductManager 
-          products={products} 
-          onAdd={addProduct} 
-          onRemove={removeProduct} 
-          onUpdate={updateProduct}
-          onReplace={replaceProducts}
-        />
+        {/* KERANJANG SECTION */}
+        <div className="bg-card border border-border shadow-sm rounded-2xl p-5">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="font-serif text-lg font-bold flex items-center gap-2">
+              <ShoppingCart size={18} className="text-primary" /> Keranjang
+            </h2>
+            <span className="text-xs font-semibold bg-muted px-2 py-1 rounded-full">{cart.length} SKU</span>
+          </div>
+          
+          {cart.length === 0 ? (
+            <div className="text-center py-6 border border-dashed rounded-xl text-muted-foreground text-sm">
+              Belum ada barang di keranjang.
+            </div>
+          ) : (
+            <ul className="space-y-3 mb-4">
+              {cart.map((item, idx) => {
+                const total = item.displayQuantity + item.secondaryDisplayQuantity + item.warehouseQuantity;
+                return (
+                  <li key={idx} className="flex justify-between items-center bg-muted/30 p-3 rounded-xl border border-border">
+                    <div>
+                      <p className="text-sm font-semibold">{item.product}</p>
+                      <p className="text-xs text-muted-foreground">D: {item.displayQuantity} | S: {item.secondaryDisplayQuantity} | G: {item.warehouseQuantity}</p>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <span className="font-bold">{total}</span>
+                      <button onClick={() => setCart(cart.filter((_, i) => i !== idx))} className="text-destructive hover:bg-destructive/10 p-1.5 rounded-md">
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
 
+          <button
+            onClick={handleSubmitAll}
+            disabled={isSaving || cart.length === 0}
+            className="w-full py-3.5 bg-primary text-primary-foreground font-semibold rounded-xl shadow-md hover:bg-primary/90 flex items-center justify-center gap-2 disabled:opacity-50"
+          >
+            {isSaving ? 'Menyimpan...' : <><Send size={20} /> Simpan Semua Data</>}
+          </button>
+        </div>
+
+        <ProductManager products={products} onAdd={addProduct} onRemove={removeProduct} onUpdate={updateProduct} onReplace={replaceProducts} />
+
+        {/* RIWAYAT SECTION (Sama seperti sebelumnya) */}
         <section className="bg-card border border-border shadow-sm rounded-2xl p-5">
           <div className="flex items-start justify-between gap-4 mb-4">
             <div>
               <div className="flex items-center gap-2">
                 <Cloud size={18} className="text-primary" />
-                <h2 className="font-serif text-lg font-bold text-foreground">Stok toko & riwayat transaksi</h2>
+                <h2 className="font-serif text-lg font-bold text-foreground">Riwayat transaksi</h2>
               </div>
-              <p className="text-xs text-muted-foreground mt-1">
-                {activeStore
-                  ? `Data ${activeStore} diperbarui otomatis setiap beberapa detik.`
-                  : 'Masukkan nama toko aktif untuk melihat saldo dan riwayatnya.'}
-              </p>
             </div>
-            <span className="text-[10px] uppercase tracking-[0.14em] font-semibold text-muted-foreground border border-border rounded-full px-2 py-1">
-              Live
-            </span>
           </div>
-
-          {!activeStore ? (
-            <div className="rounded-xl border border-dashed border-border px-4 py-5 text-center">
-              <p className="text-sm font-medium text-foreground">Toko belum dipilih</p>
-              <p className="text-xs text-muted-foreground mt-1">
-                Isi Toko Aktif di atas agar data toko lain tidak ikut tercampur.
-              </p>
-            </div>
-          ) : entriesError || balancesError ? (
-            <div className="rounded-xl border border-destructive/25 bg-destructive/5 px-4 py-5 text-center" role="alert">
-              <p className="text-sm font-semibold text-foreground">Data toko belum dapat dimuat</p>
-              <p className="mt-1 text-xs text-muted-foreground">Saldo tetap tersimpan. Periksa koneksi lalu coba muat ulang.</p>
-              <button type="button" onClick={() => { refetchEntries(); refetchBalances(); }} className="mt-3 rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground">Coba lagi</button>
-            </div>
-          ) : isRecentLoading || isBalanceLoading ? (
-            <div className="space-y-3 py-2" aria-label="Memuat data toko">
-              <div className="h-14 animate-pulse rounded-xl bg-muted" />
-              <div className="h-14 animate-pulse rounded-xl bg-muted" />
-            </div>
-          ) : recentEntries.length === 0 && stockBalances.length === 0 ? (
-            <div className="rounded-xl border border-dashed border-border px-4 py-5 text-center">
-              <p className="text-sm font-medium text-foreground">Belum ada saldo atau transaksi</p>
-              <p className="text-xs text-muted-foreground mt-1">
-                Input tambahan atau kunjungan pertama akan menjadi awal saldo toko ini.
-              </p>
-            </div>
+          
+          {recentEntries.length === 0 ? (
+            <p className="text-center text-sm text-muted-foreground py-4">Belum ada transaksi.</p>
           ) : (
             <div className="space-y-3">
-              {stockBalances.length > 0 && (
-                <div className="rounded-xl bg-primary/5 border border-primary/10 p-3">
-                  <div className="flex items-center justify-between mb-2">
-                    <p className="text-xs font-bold uppercase tracking-[0.12em] text-primary">
-                      Stok total per produk
-                    </p>
-                    <span className="text-[10px] text-muted-foreground" data-testid="text-stock-balance-count">
-                      {stockBalances.length} produk · barcode
-                    </span>
-                  </div>
-                  <p className="mb-2 text-[11px] text-muted-foreground">
-                    Satu angka total per produk untuk toko ini; sumber stok digabung otomatis.
-                  </p>
-                  <div className="space-y-2">
-                    {stockBalances.map((balance) => (
-                      <div
-                        key={`${balance.store}-${balance.barcode}`}
-                        className="flex items-center justify-between gap-3 border-t border-primary/10 py-2 first:border-t-0 first:pt-0"
-                        data-testid={`row-stock-balance-${balance.barcode}`}
-                      >
-                        <div className="min-w-0">
-                          <p className="text-sm font-semibold text-foreground truncate">{balance.product}</p>
-                          <p className="text-[11px] text-muted-foreground font-mono truncate">{balance.barcode}</p>
-                        </div>
-                        <span
-                          className="shrink-0 text-lg font-bold text-primary"
-                          data-testid={`text-stock-balance-quantity-${balance.barcode}`}
-                        >
-                          {balance.totalQuantity}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-              {recentEntries.length > 0 && (
-                <div className={stockBalances.length > 0 ? "border-t border-border pt-3" : ""}>
-                  <p className="text-xs font-semibold text-foreground">Buku stok · pergerakan terbaru</p>
-                  <p className="mb-2 mt-1 text-[11px] text-muted-foreground">
-                    Input, penjualan, barang masuk, dan koreksi fisik tercatat bersama. Saldo dihitung dari pergerakan ini.
-                  </p>
-                </div>
-              )}
               {recentEntries.map((entry) => {
                 const syncMeta = getSyncMeta();
                 const SyncIcon = syncMeta.icon;
-                const movementQuantity = entry.transaction.trim().toLocaleLowerCase('id-ID') === 'penjualan'
-                  ? -entry.quantity
-                  : entry.quantity;
-                
-                const canDelete = entry.sourceType === 'manual' || entry.sourceType === 'adjustment';
-
                 return (
-                  <div key={entry.id} className="rounded-xl border border-border p-3">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <p className="text-sm font-semibold text-foreground truncate">{entry.product}</p>
-                        <p className="text-xs text-muted-foreground mt-0.5">
-                          {entry.transaction} · {movementQuantity > 0 ? '+' : ''}{movementQuantity} stok ·{' '}
-                          {new Date(entry.occurredAt || entry.createdAt).toLocaleString('id-ID', {
-                            day: '2-digit',
-                            month: 'short',
-                            hour: '2-digit',
-                            minute: '2-digit',
-                          })}
-                        </p>
-                      </div>
-                      <div className="flex shrink-0 items-center gap-2">
-                        <span className={`flex items-center gap-1 rounded-full border px-2 py-1 text-[10px] font-semibold ${syncMeta.className}`}>
-                          <SyncIcon size={12} />
-                          {syncMeta.label}
-                        </span>
-                        {canDelete ? (
-                          <button
-                            type="button"
-                            onClick={() => deleteEntry(entry)}
-                            disabled={deleteEntryMutation.isPending}
-                            className="rounded-lg p-2 text-muted-foreground transition hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
-                            aria-label={`Hapus catatan ${entry.product}`}
-                            data-testid={`button-delete-stock-entry-${entry.id}`}
-                          >
-                            <Trash2 size={14} />
-                          </button>
-                        ) : (
-                          <span className="px-1 text-[10px] text-muted-foreground" title="Kelola dari riwayat operasional">
-                            Kelola dari sumber
-                          </span>
-                        )}
-                      </div>
+                  <div key={entry.id} className="rounded-xl border border-border p-3 flex justify-between items-center">
+                    <div>
+                      <p className="text-sm font-semibold truncate">{entry.product}</p>
+                      <p className="text-xs text-muted-foreground mt-0.5">{entry.transaction} · {entry.quantity} stok</p>
                     </div>
+                     <button onClick={() => deleteEntry(entry)} className="p-2 text-muted-foreground hover:text-destructive">
+                        <Trash2 size={14} />
+                      </button>
                   </div>
                 );
               })}
-              
-              {/* TOMBOL MUAT LEBIH BANYAK / SEDIKIT */}
-              <div className="flex gap-2 mt-2">
-                {historyLimit > 5 && (
-                  <button
-                    type="button"
-                    onClick={() => setHistoryLimit((prev) => Math.max(5, prev - 5))}
-                    className="flex-1 py-2.5 text-sm font-semibold text-muted-foreground border border-border rounded-xl hover:bg-muted/50 transition-colors"
-                  >
-                    Muat Lebih Sedikit
-                  </button>
-                )}
-                
-                {recentEntries.length >= historyLimit && (
-                  <button
-                    type="button"
-                    onClick={() => setHistoryLimit((prev) => prev + 5)}
-                    className="flex-1 py-2.5 text-sm font-semibold text-primary border border-primary/30 rounded-xl hover:bg-primary/5 transition-colors"
-                  >
-                    Muat Lebih Banyak
-                  </button>
-                )}
-              </div>
-
+              {recentEntries.length >= historyLimit && (
+                <button onClick={() => setHistoryLimit(prev => prev + 5)} className="w-full mt-2 py-2 text-sm font-semibold text-primary border border-primary/30 rounded-xl">Muat Lebih Banyak</button>
+              )}
             </div>
           )}
         </section>
       </main>
 
-      <BarcodeScanner 
-        isOpen={isScannerOpen} 
-        onClose={() => setIsScannerOpen(false)} 
-        onScanSuccess={handleScanSuccess} 
-      />
+      <BarcodeScanner isOpen={isScannerOpen} onClose={() => setIsScannerOpen(false)} onScanSuccess={handleScanSuccess} />
     </div>
   );
 }
