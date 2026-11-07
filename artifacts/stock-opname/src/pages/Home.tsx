@@ -6,7 +6,7 @@ import { ProductManager } from '@/components/ProductManager';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { useToast } from '@/hooks/use-toast';
 import {
-  Box, CheckCircle2, Cloud, RefreshCw, Send, Trash2, Plus, Minus, ShoppingCart, Search, Camera, X
+  Box, CheckCircle2, Cloud, RefreshCw, Send, Trash2, Plus, Minus, ShoppingCart, Search, Camera, X, Package
 } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Link } from 'wouter';
@@ -43,36 +43,41 @@ export default function Home() {
   const [transaction, setTransaction] = useState(TRANSACTIONS[0]);
   const [isScannerOpen, setIsScannerOpen] = useState(false);
   
+  // Pencarian
   const [searchQuery, setSearchQuery] = useState('');
   const [showSearchResults, setShowSearchResults] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const searchContainerRef = useRef<HTMLDivElement>(null);
 
+  // Input Qty
   const [displayQuantity, setDisplayQuantity] = useState<string>('');
   const [secondaryDisplayQuantity, setSecondaryDisplayQuantity] = useState<string>('');
   const [warehouseQuantity, setWarehouseQuantity] = useState<string>('');
   
+  // Keranjang & Riwayat
   const [cart, setCart] = useState<CartItem[]>([]);
   const [isSaving, setIsSaving] = useState(false);
   const [historyLimit, setHistoryLimit] = useState(5);
-  
-  // STATE UNTUK KONFIRMASI HAPUS
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
 
   const queryClient = useQueryClient();
   const activeStore = storeName.trim();
 
+  // Queries
   const { data: health } = useHealthCheck({ query: { queryKey: getHealthCheckQueryKey(), refetchInterval: 30000 } });
   const storesQuery = useListStores({ query: { queryKey: getListStoresQueryKey(), staleTime: 300000 } });
+  
   const { data: recentEntries = [] } = useListStockEntries(
     { store: activeStore, limit: historyLimit },
     { query: { queryKey: getListStockEntriesQueryKey({ store: activeStore, limit: historyLimit }), refetchInterval: 5000, enabled: !!activeStore } }
   );
+  
   const { data: stockBalances = [] } = useListStockBalances(
     { store: activeStore },
     { query: { queryKey: getListStockBalancesQueryKey({ store: activeStore }), refetchInterval: 5000, enabled: !!activeStore } }
   );
 
+  // Mutations
   const submitMutation = useCreateStockEntry();
   const deleteEntryMutation = useDeleteStockEntry();
 
@@ -171,7 +176,6 @@ export default function Home() {
     }
   };
 
-  // FUNGSI EKSEKUSI HAPUS
   const executeDelete = (entry: StockEntry) => {
     deleteEntryMutation.mutate({ id: entry.id }, {
       onSuccess: () => {
@@ -206,6 +210,8 @@ export default function Home() {
       </header>
 
       <main className="w-full max-w-md px-4 flex flex-col gap-5">
+        
+        {/* FORM INPUT & KERANJANG */}
         <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm rounded-2xl p-5">
           <div className="space-y-4">
             <div className="grid grid-cols-2 gap-3">
@@ -320,6 +326,31 @@ export default function Home() {
 
         <ProductManager products={products} onAdd={addProduct} onRemove={removeProduct} onUpdate={updateProduct} onReplace={replaceProducts} />
 
+        {/* --- BAGIAN STOK PRODUK (SALDO) YANG SEMPAT HILANG --- */}
+        <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm rounded-2xl p-5">
+          <h2 className="font-serif text-lg font-bold flex items-center gap-2 mb-4">
+            <Package size={18} className="text-emerald-600" /> Stok Produk Saat Ini
+          </h2>
+          {stockBalances.length === 0 ? (
+            <p className="text-center text-sm text-slate-500 py-4">Belum ada stok barang di toko ini.</p>
+          ) : (
+            <div className="space-y-2">
+              {stockBalances.map((balance) => (
+                <div key={`${balance.store}-${balance.barcode}`} className="flex items-center justify-between p-3 rounded-xl border border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/50">
+                  <div className="min-w-0 pr-2">
+                    <p className="text-sm font-bold text-slate-800 dark:text-slate-200 truncate">{balance.product}</p>
+                    <p className="text-[11px] text-slate-500 font-mono mt-0.5">{balance.barcode}</p>
+                  </div>
+                  <span className="shrink-0 text-lg font-bold text-emerald-700 dark:text-emerald-400 bg-emerald-100 dark:bg-emerald-900/30 px-3 py-1 rounded-lg">
+                    {balance.totalQuantity}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
+        {/* --- RIWAYAT TRANSAKSI --- */}
         <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm rounded-2xl p-5">
           <h2 className="font-serif text-lg font-bold flex items-center gap-2 mb-4"><Cloud size={18} className="text-emerald-600" /> Riwayat Transaksi</h2>
           {recentEntries.length === 0 ? (
@@ -333,7 +364,6 @@ export default function Home() {
                     <p className="text-xs text-slate-500 mt-0.5">{entry.transaction} · {entry.quantity} unit</p>
                   </div>
                   
-                  {/* LOGIKA KONFIRMASI HAPUS BARU */}
                   {confirmDeleteId === entry.id ? (
                     <div className="flex items-center gap-1.5 animate-in fade-in zoom-in duration-200">
                       <button onClick={() => setConfirmDeleteId(null)} className="px-2.5 py-1.5 text-[11px] font-bold text-slate-600 bg-slate-200 dark:bg-slate-700 dark:text-slate-300 rounded-md">Batal</button>
