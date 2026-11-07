@@ -6,7 +6,7 @@ import { ProductManager } from '@/components/ProductManager';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { useToast } from '@/hooks/use-toast';
 import {
-  Box, CheckCircle2, Cloud, RefreshCw, Send, Trash2, Plus, Minus, ShoppingCart, Search, Camera, X, Package
+  Box, RefreshCw, Send, Trash2, Plus, Minus, ShoppingCart, Search, Camera, X, Package
 } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Link } from 'wouter';
@@ -20,10 +20,7 @@ import {
   getHealthCheckQueryKey,
   useHealthCheck,
   useCreateStockEntry,
-  useDeleteStockEntry,
   useListStockBalances,
-  useListStockEntries,
-  type StockEntry
 } from '@workspace/api-client-react';
 
 const TRANSACTIONS = ['Input Stok', 'Stock Awal', 'Penjualan', 'Koreksi Stok +', 'Koreksi Stok -', 'Pembelian', 'Retur', 'Lainnya'];
@@ -54,11 +51,9 @@ export default function Home() {
   const [secondaryDisplayQuantity, setSecondaryDisplayQuantity] = useState<string>('');
   const [warehouseQuantity, setWarehouseQuantity] = useState<string>('');
   
-  // Keranjang & Riwayat
+  // Keranjang
   const [cart, setCart] = useState<CartItem[]>([]);
   const [isSaving, setIsSaving] = useState(false);
-  const [historyLimit, setHistoryLimit] = useState(5);
-  const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
 
   const queryClient = useQueryClient();
   const activeStore = storeName.trim();
@@ -67,11 +62,7 @@ export default function Home() {
   const { data: health } = useHealthCheck({ query: { queryKey: getHealthCheckQueryKey(), refetchInterval: 30000 } });
   const storesQuery = useListStores({ query: { queryKey: getListStoresQueryKey(), staleTime: 300000 } });
   
-  const { data: recentEntries = [] } = useListStockEntries(
-    { store: activeStore, limit: historyLimit },
-    { query: { queryKey: getListStockEntriesQueryKey({ store: activeStore, limit: historyLimit }), refetchInterval: 5000, enabled: !!activeStore } }
-  );
-  
+  // Hanya query saldo yang dipertahankan
   const { data: stockBalances = [] } = useListStockBalances(
     { store: activeStore },
     { query: { queryKey: getListStockBalancesQueryKey({ store: activeStore }), refetchInterval: 5000, enabled: !!activeStore } }
@@ -79,7 +70,6 @@ export default function Home() {
 
   // Mutations
   const submitMutation = useCreateStockEntry();
-  const deleteEntryMutation = useDeleteStockEntry();
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -167,28 +157,15 @@ export default function Home() {
       }
       toast({ title: 'Berhasil', description: `${successCount} produk disimpan.` });
       setCart([]);
-      queryClient.invalidateQueries({ queryKey: getListStockEntriesQueryKey() });
+      // Hanya invalidasi saldo karena riwayat sudah tidak ada di halaman ini
       queryClient.invalidateQueries({ queryKey: getListStockBalancesQueryKey() });
+      queryClient.invalidateQueries({ queryKey: getGetSalesMonitorQueryKey() });
+      queryClient.invalidateQueries({ queryKey: getGetSalesActivityQueryKey() });
     } catch (error: any) {
       toast({ title: 'Gagal', description: error.message, variant: 'destructive' });
     } finally {
       setIsSaving(false);
     }
-  };
-
-  const executeDelete = (entry: StockEntry) => {
-    deleteEntryMutation.mutate({ id: entry.id }, {
-      onSuccess: () => {
-        queryClient.invalidateQueries({ queryKey: getListStockEntriesQueryKey() });
-        queryClient.invalidateQueries({ queryKey: getListStockBalancesQueryKey() });
-        toast({ title: 'Berhasil dihapus', description: 'Saldo toko diperbarui.' });
-        setConfirmDeleteId(null);
-      },
-      onError: (err: any) => {
-        toast({ title: 'Gagal menghapus', description: err.message, variant: 'destructive' });
-        setConfirmDeleteId(null);
-      }
-    });
   };
 
   const selectedBalance = selectedProduct ? stockBalances.find(b => b.barcode === selectedProduct.barcode) : null;
@@ -326,7 +303,7 @@ export default function Home() {
 
         <ProductManager products={products} onAdd={addProduct} onRemove={removeProduct} onUpdate={updateProduct} onReplace={replaceProducts} />
 
-        {/* --- BAGIAN STOK PRODUK (SALDO) YANG SEMPAT HILANG --- */}
+        {/* --- BAGIAN STOK PRODUK (SALDO) --- */}
         <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm rounded-2xl p-5">
           <h2 className="font-serif text-lg font-bold flex items-center gap-2 mb-4">
             <Package size={18} className="text-emerald-600" /> Stok Produk Saat Ini
@@ -346,39 +323,6 @@ export default function Home() {
                   </span>
                 </div>
               ))}
-            </div>
-          )}
-        </section>
-
-        {/* --- RIWAYAT TRANSAKSI --- */}
-        <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm rounded-2xl p-5">
-          <h2 className="font-serif text-lg font-bold flex items-center gap-2 mb-4"><Cloud size={18} className="text-emerald-600" /> Riwayat Transaksi</h2>
-          {recentEntries.length === 0 ? (
-            <p className="text-center text-sm text-slate-500 py-4">Belum ada transaksi tercatat.</p>
-          ) : (
-            <div className="space-y-3">
-              {recentEntries.map((entry: any) => (
-                <div key={entry.id} className="rounded-xl border border-slate-100 dark:border-slate-800 p-3 flex justify-between items-center bg-slate-50 dark:bg-slate-950/50">
-                  <div>
-                    <p className="text-sm font-bold text-slate-800 dark:text-slate-200">{entry.product}</p>
-                    <p className="text-xs text-slate-500 mt-0.5">{entry.transaction} · {entry.quantity} unit</p>
-                  </div>
-                  
-                  {confirmDeleteId === entry.id ? (
-                    <div className="flex items-center gap-1.5 animate-in fade-in zoom-in duration-200">
-                      <button onClick={() => setConfirmDeleteId(null)} className="px-2.5 py-1.5 text-[11px] font-bold text-slate-600 bg-slate-200 dark:bg-slate-700 dark:text-slate-300 rounded-md">Batal</button>
-                      <button onClick={() => executeDelete(entry)} className="px-2.5 py-1.5 text-[11px] font-bold text-white bg-red-600 hover:bg-red-700 rounded-md">Hapus</button>
-                    </div>
-                  ) : (
-                    <button onClick={() => setConfirmDeleteId(entry.id)} className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors">
-                      <Trash2 size={16} />
-                    </button>
-                  )}
-                </div>
-              ))}
-              {recentEntries.length >= historyLimit && (
-                <button onClick={() => setHistoryLimit(prev => prev + 5)} className="w-full py-2.5 mt-2 text-sm font-bold text-emerald-700 dark:text-emerald-400 border-2 border-emerald-100 dark:border-emerald-900/50 rounded-xl hover:bg-emerald-50 dark:hover:bg-emerald-900/20 transition-colors">Muat Lebih Banyak</button>
-              )}
             </div>
           )}
         </section>
