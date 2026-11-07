@@ -79,8 +79,6 @@ export default function Home() {
   const queryClient = useQueryClient();
   const activeStore = storeName.trim();
   const totalStock = Number(displayQuantity || 0) + Number(secondaryDisplayQuantity || 0) + Number(warehouseQuantity || 0);
-  const isNegativeMovement = transaction === 'Penjualan' || transaction === 'Koreksi Stok -';
-  const isPhysicalCorrection = transaction === 'Koreksi Stok +' || transaction === 'Koreksi Stok -';
   
   const { data: health } = useHealthCheck({
     query: { queryKey: getHealthCheckQueryKey(), refetchInterval: 30_000 },
@@ -89,7 +87,7 @@ export default function Home() {
     query: { queryKey: getListStoresQueryKey(), staleTime: 5 * 60 * 1000 },
   });
 
-  const { data: recentEntries = [], isLoading: isRecentLoading, isError: entriesError, refetch: refetchEntries } = useListStockEntries(
+  const { data: recentEntries = [], isLoading: isRecentLoading } = useListStockEntries(
     { store: activeStore, limit: historyLimit },
     {
       query: {
@@ -99,7 +97,7 @@ export default function Home() {
       },
     },
   );
-  const { data: stockBalances = [], isLoading: isBalanceLoading, isError: balancesError, refetch: refetchBalances } = useListStockBalances(
+  const { data: stockBalances = [], isLoading: isBalanceLoading } = useListStockBalances(
     { store: activeStore },
     {
       query: {
@@ -117,32 +115,24 @@ export default function Home() {
       onSuccess: () => {
         queryClient.invalidateQueries({ queryKey: getListStockEntriesQueryKey() });
         queryClient.invalidateQueries({ queryKey: getListStockBalancesQueryKey() });
-        queryClient.invalidateQueries({ queryKey: getGetSalesMonitorQueryKey() });
-        queryClient.invalidateQueries({ queryKey: getGetSalesActivityQueryKey() });
-        toast({ title: 'Catatan dihapus', description: 'Saldo toko dan laporan penjualan diperbarui.' });
-      },
-      onError: (err: any) => toast({
-        title: 'Catatan belum dihapus',
-        description: err.message || 'Silakan coba lagi.',
-        variant: 'destructive',
-      }),
+        toast({ title: 'Catatan dihapus', description: 'Saldo toko diperbarui.' });
+      }
     });
   };
 
   const submitMutation = useCreateStockEntry();
 
-  // FUNGSI TAMBAH KE KERANJANG
   const handleAddToCart = () => {
     const product = products.find(p => p.barcode === selectedBarcode);
     const hasQuantity = displayQuantity !== '' || secondaryDisplayQuantity !== '' || warehouseQuantity !== '';
     
     if (!selectedBarcode || !hasQuantity) {
-      toast({ title: 'Peringatan', description: 'Pilih produk dan isi jumlahnya terlebih dahulu.', variant: 'destructive' });
+      toast({ title: 'Peringatan', description: 'Pilih produk dan isi jumlahnya.', variant: 'destructive' });
       return;
     }
 
     if (cart.some(item => item.barcode === selectedBarcode)) {
-      toast({ title: 'Perhatian', description: 'Produk ini sudah ada di dalam keranjang.', variant: 'destructive' });
+      toast({ title: 'Perhatian', description: 'Produk ini sudah ada di keranjang.', variant: 'destructive' });
       return;
     }
 
@@ -154,7 +144,6 @@ export default function Home() {
       warehouseQuantity: Number(warehouseQuantity || 0),
     }]);
 
-    // Reset Form
     setSearchQuery('');
     setSelectedBarcode('');
     setDisplayQuantity('');
@@ -163,15 +152,10 @@ export default function Home() {
     toast({ title: 'Berhasil', description: 'Produk ditambahkan ke keranjang.' });
   };
 
-  // FUNGSI SIMPAN SEMUA KERANJANG
   const handleSubmitAll = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!activeStore) {
-      toast({ title: 'Peringatan', description: 'Toko aktif belum diisi.', variant: 'destructive' });
-      return;
-    }
-    if (cart.length === 0) {
-      toast({ title: 'Peringatan', description: 'Keranjang masih kosong.', variant: 'destructive' });
+    if (!activeStore || cart.length === 0) {
+      toast({ title: 'Peringatan', description: 'Toko atau keranjang belum siap.', variant: 'destructive' });
       return;
     }
 
@@ -181,7 +165,7 @@ export default function Home() {
     try {
       for (const item of cart) {
         const isAdjustment = transaction === 'Koreksi Stok +' || transaction === 'Koreksi Stok -';
-        const payload = {
+        await submitMutation.mutateAsync({ data: {
           clientId: globalThis.crypto.randomUUID(),
           store: activeStore,
           transaction,
@@ -192,23 +176,16 @@ export default function Home() {
           secondaryDisplayQuantity: item.secondaryDisplayQuantity,
           warehouseQuantity: item.warehouseQuantity,
           ...(isAdjustment ? { sourceType: 'adjustment' as const } : {}),
-        };
-
-        await submitMutation.mutateAsync({ data: payload as any });
+        } as any });
         successCount++;
       }
 
-      toast({ title: 'Berhasil Disimpan', description: `${successCount} produk berhasil dimasukkan ke server.` });
+      toast({ title: 'Berhasil', description: `${successCount} produk disimpan.` });
       setCart([]);
-      
       queryClient.invalidateQueries({ queryKey: getListStockEntriesQueryKey() });
       queryClient.invalidateQueries({ queryKey: getListStockBalancesQueryKey() });
-      queryClient.invalidateQueries({ queryKey: getGetSalesMonitorQueryKey() });
-      queryClient.invalidateQueries({ queryKey: getGetSalesActivityQueryKey() });
-      queryClient.invalidateQueries({ queryKey: getListStoresQueryKey() });
-
     } catch (error: any) {
-      toast({ title: 'Gagal Menyimpan', description: error.message || 'Terjadi kesalahan.', variant: 'destructive' });
+      toast({ title: 'Gagal', description: error.message, variant: 'destructive' });
     } finally {
       setIsSaving(false);
     }
@@ -220,31 +197,16 @@ export default function Home() {
     if (product) {
       setSelectedBarcode(product.barcode);
       setSearchQuery(product.name);
-      toast({ title: 'Barcode Ditemukan', description: `Produk: ${product.name}` });
+      toast({ title: 'Ditemukan', description: product.name });
     } else {
-      toast({ title: 'Barcode Tidak Dikenali', description: `${code}. Silakan pilih manual.`, variant: 'destructive' });
-      setSelectedBarcode('');
-      setSearchQuery('');
+      toast({ title: 'Tidak Dikenali', description: code, variant: 'destructive' });
     }
   }, [products, toast]);
 
-  const categories = useMemo(() => {
-    const cats = new Set(products.map(p => p.category));
-    return Array.from(cats).sort();
-  }, [products]);
-  
   const selectedBalance = useMemo<StockBalance | undefined>(
     () => stockBalances.find((balance) => balance.barcode === selectedBarcode),
     [selectedBarcode, stockBalances],
   );
-
-  const getSyncMeta = () => {
-    return {
-      label: 'Tersimpan',
-      icon: CheckCircle2,
-      className: 'text-emerald-700 bg-emerald-50 border-emerald-200',
-    };
-  };
 
   return (
     <div className="min-h-[100dvh] w-full bg-background flex flex-col items-center pb-12">
@@ -252,222 +214,137 @@ export default function Home() {
         <div className="flex justify-between items-start mb-2">
           <div>
             <h1 className="text-2xl font-serif font-bold tracking-tight">Erlangga</h1>
-            <h2 className="text-sm text-primary-foreground/80 font-medium">Pencatatan Stok Toko</h2>
-            <nav className="mt-4 flex flex-wrap gap-2" aria-label="Navigasi utama">
-              <Link href="/operasional" className="rounded-lg bg-white/15 px-3 py-1.5 text-xs font-semibold transition hover:bg-white/25">
-                Kunjungan & barang masuk
-              </Link>
-              <Link href="/dashboard" className="rounded-lg bg-white/15 px-3 py-1.5 text-xs font-semibold transition hover:bg-white/25">
-                Penjualan harian
-              </Link>
+            <nav className="mt-4 flex flex-wrap gap-2">
+              <Link href="/operasional" className="rounded-lg bg-white/15 px-3 py-1.5 text-xs font-semibold">Kunjungan</Link>
+              <Link href="/dashboard" className="rounded-lg bg-white/15 px-3 py-1.5 text-xs font-semibold">Laporan</Link>
             </nav>
           </div>
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-1.5 px-2.5 py-1 bg-white/10 rounded-full" title={health?.status ?? 'Status koneksi'}>
-              <div className={`w-2 h-2 rounded-full ${health?.status === 'ok' ? 'bg-emerald-300' : 'bg-amber-300'}`} />
-              <span className="text-xs font-medium">{health?.status === 'ok' ? 'Terhubung' : 'Memeriksa'}</span>
-            </div>
-            <ThemeToggle />
-          </div>
+          <ThemeToggle />
         </div>
       </header>
 
       <main className="w-full max-w-md px-4 flex-1 flex flex-col gap-6">
-        <div className="bg-card border border-border shadow-sm rounded-2xl p-5 relative overflow-hidden">
-          <form className="flex flex-col gap-5 relative z-10">
-            {/* Store Name */}
+        <div className="bg-card border border-border shadow-sm rounded-2xl p-5">
+          <form className="flex flex-col gap-5">
             <div className="space-y-1.5">
-               <label htmlFor="store" className="text-sm font-semibold text-foreground flex items-center gap-2">
-                 <Box size={16} className="text-muted-foreground" /> Toko Aktif
-              </label>
+               <label className="text-sm font-semibold flex items-center gap-2"><Box size={16} /> Toko Aktif</label>
               <input
-                id="store"
-                type="text"
                 list="known-stores-home"
                 value={storeName}
                 onChange={(e) => setStoreName(e.target.value)}
-                className="w-full px-4 py-2.5 bg-background border border-border rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/40 text-sm font-medium"
+                className="w-full px-4 py-2.5 bg-background border border-border rounded-xl text-sm font-medium"
                 placeholder="Contoh: Toko Sentosa"
-                required
               />
-                <datalist id="known-stores-home">
-                  {(storesQuery.data ?? []).map((store) => <option key={store.name} value={store.name} />)}
-                </datalist>
+              <datalist id="known-stores-home">
+                {(storesQuery.data ?? []).map((store) => <option key={store.name} value={store.name} />)}
+              </datalist>
             </div>
 
-            {/* Transaction Type */}
             <div className="space-y-1.5">
-              <label htmlFor="transaction" className="text-sm font-semibold text-foreground flex items-center gap-2">
-                <RefreshCw size={16} className="text-muted-foreground" /> Tipe Transaksi
-              </label>
-              <div className="relative">
-                <select
-                  id="transaction"
-                  value={transaction}
-                  onChange={(e) => setTransaction(e.target.value)}
-                  className="w-full px-4 py-2.5 bg-background border border-border rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/40 text-sm appearance-none font-medium"
-                >
-                  {TRANSACTIONS.map(t => <option key={t} value={t}>{t}</option>)}
-                </select>
-                <div className="absolute inset-y-0 right-4 flex items-center pointer-events-none text-muted-foreground">
-                  <svg width="12" height="8" viewBox="0 0 12 8" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <path d="M1 1.5L6 6.5L11 1.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                  </svg>
-                </div>
-              </div>
+              <label className="text-sm font-semibold flex items-center gap-2"><RefreshCw size={16} /> Tipe Transaksi</label>
+              <select
+                value={transaction}
+                onChange={(e) => setTransaction(e.target.value)}
+                className="w-full px-4 py-2.5 bg-background border border-border rounded-xl text-sm font-medium"
+              >
+                {TRANSACTIONS.map(t => <option key={t} value={t}>{t}</option>)}
+              </select>
             </div>
 
-            {/* Pencarian Produk / Barcode */}
+            {/* FITUR PENCARIAN YANG SUDAH DISAMAKAN DENGAN KUNJUNGAN */}
             <div className="space-y-1.5">
-              <label htmlFor="product-search" className="text-sm font-semibold text-foreground flex items-center gap-2">
-                <Search size={16} className="text-muted-foreground" /> Cari / Scan Produk
-              </label>
+              <label className="text-sm font-semibold flex items-center gap-2"><Search size={16} /> Cari / Scan Produk</label>
               <div className="flex gap-2">
                 <div className="relative flex-1">
                   <input
-                    id="product-search"
-                    list="product-list"
+                    list="product-list-home"
                     value={searchQuery}
                     onChange={(e) => {
                       setSearchQuery(e.target.value);
-                      const match = products.find(p => p.name.toLowerCase().includes(e.target.value.toLowerCase()) || p.barcode === e.target.value);
+                      // Logika pencarian sama seperti Kunjungan
+                      const match = products.find(p => p.barcode === e.target.value.trim() || p.name.toLowerCase() === e.target.value.toLowerCase());
                       setSelectedBarcode(match ? match.barcode : '');
                     }}
                     placeholder="Ketik nama / barcode..."
-                    className="w-full h-[46px] px-4 bg-background border border-border rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/40 text-sm"
+                    className="w-full h-[46px] px-4 bg-background border border-border rounded-xl text-sm"
                   />
-                  <datalist id="product-list">
-                    {products.map(p => <option key={p.barcode} value={p.name}>{p.barcode}</option>)}
+                  <datalist id="product-list-home">
+                    {products.map(p => (
+                      <option key={p.barcode} value={p.barcode} label={p.name} />
+                    ))}
                   </datalist>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setIsScannerOpen(true)}
-                  className="flex-none w-[46px] h-[46px] bg-accent text-accent-foreground rounded-xl shadow-sm hover:brightness-110 flex items-center justify-center"
-                >
+                <button type="button" onClick={() => setIsScannerOpen(true)} className="flex-none w-[46px] h-[46px] bg-accent text-accent-foreground rounded-xl flex items-center justify-center">
                   <Camera size={22} />
                 </button>
               </div>
-              {selectedBalance && (
-                <p className="text-xs text-primary font-semibold px-1">Saldo terpadu saat ini: {selectedBalance.totalQuantity}</p>
-              )}
+              {selectedBalance && <p className="text-xs text-primary font-semibold px-1">Saldo: {selectedBalance.totalQuantity}</p>}
             </div>
 
-            {/* Quantity */}
             <div className="space-y-3">
-              <div>
-                <p className="text-sm font-semibold text-foreground">Jumlah stok per lokasi</p>
-              </div>
+              <p className="text-sm font-semibold">Jumlah stok</p>
               <div className="grid grid-cols-3 gap-2.5">
-                {([
+                {[
                   ['displayQuantity', 'Display', displayQuantity, setDisplayQuantity],
                   ['secondaryDisplayQuantity', 'Secondary', secondaryDisplayQuantity, setSecondaryDisplayQuantity],
                   ['warehouseQuantity', 'Gudang', warehouseQuantity, setWarehouseQuantity],
-                ] as const).map(([id, label, value, setValue]) => (
-                  <label key={id} htmlFor={id} className="min-w-0 space-y-1.5">
-                    <span className="block truncate text-xs font-semibold text-muted-foreground">{label}</span>
-                    <input
-                      id={id}
-                      type="number"
-                      min="0"
-                      value={value}
-                      onChange={(event) => setValue(event.target.value ? parseInt(event.target.value, 10) : '')}
-                      className="w-full rounded-xl border border-border bg-background px-2 py-3 text-center text-lg font-bold tracking-tight focus:border-primary focus:outline-none"
-                      placeholder="0"
-                    />
+                ].map(([id, label, value, setValue]: any) => (
+                  <label key={id} className="space-y-1.5">
+                    <span className="block text-xs font-semibold text-muted-foreground">{label}</span>
+                    <input type="number" min="0" value={value} onChange={(e) => setValue(e.target.value ? parseInt(e.target.value, 10) : '')} className="w-full rounded-xl border border-border bg-background px-2 py-3 text-center text-lg font-bold" placeholder="0" />
                   </label>
                 ))}
               </div>
             </div>
 
-            {/* Tombol Tambah ke Keranjang */}
-            <button
-              type="button"
-              onClick={handleAddToCart}
-              className="w-full mt-2 py-3 bg-secondary text-secondary-foreground font-semibold rounded-xl shadow-sm hover:opacity-90 transition-all flex items-center justify-center gap-2"
-            >
-              <Plus size={20} />
-              Tambah ke Keranjang
+            <button type="button" onClick={handleAddToCart} className="w-full py-3 bg-secondary text-secondary-foreground font-semibold rounded-xl flex items-center justify-center gap-2">
+              <Plus size={20} /> Tambah ke Keranjang
             </button>
           </form>
         </div>
 
-        {/* KERANJANG SECTION */}
         <div className="bg-card border border-border shadow-sm rounded-2xl p-5">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="font-serif text-lg font-bold flex items-center gap-2">
-              <ShoppingCart size={18} className="text-primary" /> Keranjang
-            </h2>
+            <h2 className="font-serif text-lg font-bold flex items-center gap-2"><ShoppingCart size={18} /> Keranjang</h2>
             <span className="text-xs font-semibold bg-muted px-2 py-1 rounded-full">{cart.length} SKU</span>
           </div>
           
           {cart.length === 0 ? (
-            <div className="text-center py-6 border border-dashed rounded-xl text-muted-foreground text-sm">
-              Belum ada barang di keranjang.
-            </div>
+            <div className="text-center py-6 border border-dashed rounded-xl text-muted-foreground text-sm">Belum ada barang.</div>
           ) : (
             <ul className="space-y-3 mb-4">
-              {cart.map((item, idx) => {
-                const total = item.displayQuantity + item.secondaryDisplayQuantity + item.warehouseQuantity;
-                return (
-                  <li key={idx} className="flex justify-between items-center bg-muted/30 p-3 rounded-xl border border-border">
-                    <div>
-                      <p className="text-sm font-semibold">{item.product}</p>
-                      <p className="text-xs text-muted-foreground">D: {item.displayQuantity} | S: {item.secondaryDisplayQuantity} | G: {item.warehouseQuantity}</p>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <span className="font-bold">{total}</span>
-                      <button onClick={() => setCart(cart.filter((_, i) => i !== idx))} className="text-destructive hover:bg-destructive/10 p-1.5 rounded-md">
-                        <Trash2 size={16} />
-                      </button>
-                    </div>
-                  </li>
-                );
-              })}
+              {cart.map((item, idx) => (
+                <li key={idx} className="flex justify-between items-center bg-muted/30 p-3 rounded-xl border border-border">
+                  <div>
+                    <p className="text-sm font-semibold">{item.product}</p>
+                    <p className="text-xs text-muted-foreground">D: {item.displayQuantity} | S: {item.secondaryDisplayQuantity} | G: {item.warehouseQuantity}</p>
+                  </div>
+                  <button onClick={() => setCart(cart.filter((_, i) => i !== idx))} className="text-destructive p-1.5"><Trash2 size={16} /></button>
+                </li>
+              ))}
             </ul>
           )}
 
-          <button
-            onClick={handleSubmitAll}
-            disabled={isSaving || cart.length === 0}
-            className="w-full py-3.5 bg-primary text-primary-foreground font-semibold rounded-xl shadow-md hover:bg-primary/90 flex items-center justify-center gap-2 disabled:opacity-50"
-          >
-            {isSaving ? 'Menyimpan...' : <><Send size={20} /> Simpan Semua Data</>}
+          <button onClick={handleSubmitAll} disabled={isSaving || cart.length === 0} className="w-full py-3.5 bg-primary text-primary-foreground font-semibold rounded-xl flex items-center justify-center gap-2 disabled:opacity-50">
+            {isSaving ? 'Menyimpan...' : <><Send size={20} /> Simpan Semua</>}
           </button>
         </div>
 
-        <ProductManager products={products} onAdd={addProduct} onRemove={removeProduct} onUpdate={updateProduct} onReplace={replaceProducts} />
-
-        {/* RIWAYAT SECTION (Sama seperti sebelumnya) */}
         <section className="bg-card border border-border shadow-sm rounded-2xl p-5">
-          <div className="flex items-start justify-between gap-4 mb-4">
-            <div>
-              <div className="flex items-center gap-2">
-                <Cloud size={18} className="text-primary" />
-                <h2 className="font-serif text-lg font-bold text-foreground">Riwayat transaksi</h2>
-              </div>
-            </div>
-          </div>
-          
+          <h2 className="font-serif text-lg font-bold mb-4">Riwayat</h2>
           {recentEntries.length === 0 ? (
             <p className="text-center text-sm text-muted-foreground py-4">Belum ada transaksi.</p>
           ) : (
             <div className="space-y-3">
-              {recentEntries.map((entry) => {
-                const syncMeta = getSyncMeta();
-                const SyncIcon = syncMeta.icon;
-                return (
-                  <div key={entry.id} className="rounded-xl border border-border p-3 flex justify-between items-center">
-                    <div>
-                      <p className="text-sm font-semibold truncate">{entry.product}</p>
-                      <p className="text-xs text-muted-foreground mt-0.5">{entry.transaction} · {entry.quantity} stok</p>
-                    </div>
-                     <button onClick={() => deleteEntry(entry)} className="p-2 text-muted-foreground hover:text-destructive">
-                        <Trash2 size={14} />
-                      </button>
+              {recentEntries.map((entry) => (
+                <div key={entry.id} className="rounded-xl border border-border p-3 flex justify-between items-center">
+                  <div>
+                    <p className="text-sm font-semibold">{entry.product}</p>
+                    <p className="text-xs text-muted-foreground">{entry.transaction} · {entry.quantity} stok</p>
                   </div>
-                );
-              })}
+                   <button onClick={() => deleteEntry(entry)} className="p-2 text-muted-foreground"><Trash2 size={14} /></button>
+                </div>
+              ))}
               {recentEntries.length >= historyLimit && (
                 <button onClick={() => setHistoryLimit(prev => prev + 5)} className="w-full mt-2 py-2 text-sm font-semibold text-primary border border-primary/30 rounded-xl">Muat Lebih Banyak</button>
               )}
