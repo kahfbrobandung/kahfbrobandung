@@ -8,7 +8,7 @@ import {
   timestamp,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
-import { usersTable } from "./users";
+import { usersTable } from "./user";
 
 export const storesTable = pgTable(
   "stores",
