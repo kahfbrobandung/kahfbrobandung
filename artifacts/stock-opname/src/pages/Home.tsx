@@ -6,10 +6,11 @@ import { ProductManager } from '@/components/ProductManager';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { useToast } from '@/hooks/use-toast';
 import {
-  Box, RefreshCw, Send, Trash2, Plus, Minus, ShoppingCart, Search, Camera, X, Package
+  Box, RefreshCw, Send, Trash2, Plus, Minus, ShoppingCart, Search, Camera, X, Package, LogOut
 } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
-import { Link } from 'wouter';
+import { Link, useLocation } from 'wouter';
+import { supabase } from '@/lib/supabase';
 import {
   getGetSalesActivityQueryKey,
   getGetSalesMonitorQueryKey,
@@ -36,6 +37,7 @@ export default function Home() {
   const { products, addProduct, removeProduct, updateProduct, replaceProducts } = useProducts();
   const [storeName, setStoreName] = useStoreName();
   const { toast } = useToast();
+  const [, setLocation] = useLocation();
 
   const [transaction, setTransaction] = useState(TRANSACTIONS[0]);
   const [isScannerOpen, setIsScannerOpen] = useState(false);
@@ -80,6 +82,11 @@ export default function Home() {
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    setLocation('/login');
+  };
 
   const filteredProducts = useMemo(() => {
     if (!searchQuery) return [];
@@ -157,7 +164,6 @@ export default function Home() {
       }
       toast({ title: 'Berhasil', description: `${successCount} produk disimpan.` });
       setCart([]);
-      // Hanya invalidasi saldo karena riwayat sudah tidak ada di halaman ini
       queryClient.invalidateQueries({ queryKey: getListStockBalancesQueryKey() });
       queryClient.invalidateQueries({ queryKey: getGetSalesMonitorQueryKey() });
       queryClient.invalidateQueries({ queryKey: getGetSalesActivityQueryKey() });
@@ -178,7 +184,15 @@ export default function Home() {
             <h1 className="text-3xl font-serif font-bold tracking-tight">Erlangga</h1>
             <p className="text-emerald-100/80 text-sm mt-1">Sistem Pencatatan Stok</p>
           </div>
-          <ThemeToggle />
+          <div className="flex items-center gap-2">
+            <ThemeToggle />
+            <button
+              onClick={handleLogout}
+              className="flex items-center gap-1 bg-red-500/90 hover:bg-red-600 active:scale-95 transition-all px-3 py-2 rounded-lg text-xs font-bold"
+            >
+              <LogOut size={14} /> Logout
+            </button>
+          </div>
         </div>
         <div className="flex gap-2">
           <Link href="/operasional" className="flex-1 bg-white/10 hover:bg-white/20 transition-colors rounded-xl py-2 text-center text-xs font-semibold">Kunjungan SO</Link>
