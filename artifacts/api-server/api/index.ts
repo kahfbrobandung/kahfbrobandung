@@ -1,2 +1,3 @@
-import app from "../src/app";
+import app from "../dist/index.mjs";
+
 export default app;
