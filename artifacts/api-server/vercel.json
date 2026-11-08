@@ -1,16 +1,16 @@
 {
   "version": 2,
-  "installCommand": "npx pnpm@9 install --no-frozen-lockfile",
-  "buildCommand": "npx pnpm@9 run build",
-  "functions": {
-    "dist/index.mjs": {
-      "runtime": "@vercel/node@3.2.24"
-    }
-  },
-  "rewrites": [
+  "installCommand": "npx pnpm@9 install --no-frozen-lockfile && npx pnpm@9 run build",
+  "builds": [
     {
-      "source": "/(.*)",
-      "destination": "/dist/index.mjs"
+      "src": "dist/index.mjs",
+      "use": "@vercel/node"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "dist/index.mjs"
     }
   ]
 }
