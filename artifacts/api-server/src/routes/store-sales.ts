@@ -21,9 +21,26 @@ import {
   storesTable,
 } from "@workspace/db";
 import { reconcileStockLedger } from "../lib/stock-ledger";
-import { displayStoreName, iso, normalizeStoreName, resolveStore } from "./helpers";
+import { displayStoreName, iso, normalizeStoreName } from "./helpers";
 
 const router: IRouter = Router();
+
+// --- FUNGSI BANTUAN KEAMANAN (Multi-Tenant) ---
+// Fungsi ini memastikan toko yang dicari benar-benar milik user yang login
+async function getSecureStore(storeName: string | undefined, userId: string) {
+  if (!storeName) return undefined;
+  const [store] = await db
+    .select()
+    .from(storesTable)
+    .where(
+      and(
+        eq(storesTable.normalizedName, normalizeStoreName(storeName)),
+        eq(storesTable.userId, userId) // <-- KUNCI KEAMANAN
+      )
+    )
+    .limit(1);
+  return store;
+}
 
 async function loadVisit(visitId: number) {
   const [visit] = await db
@@ -56,6 +73,14 @@ async function loadVisit(visitId: number) {
 }
 
 router.get("/stock-visits", async (req, res) => {
+  // PERHATIAN: Pastikan middleware auth kamu menyimpan user_id di req.user.id
+  // Jika belum, ganti dengan cara kamu mengambil ID user dari token Supabase
+  const userId = (req as any).user?.id;
+  if (!userId) {
+    res.status(401).json({ error: "Akses ditolak. Silakan login." });
+    return;
+  }
+
   const parsed = ListStockVisitsQueryParams.safeParse(req.query);
   if (!parsed.success) {
     res.status(400).json({ error: "Parameter riwayat kunjungan tidak valid." });
@@ -63,13 +88,10 @@ router.get("/stock-visits", async (req, res) => {
   }
 
   const requestedStore = parsed.data.store?.trim();
-  const store = requestedStore ? await db
-    .select()
-    .from(storesTable)
-    .where(eq(storesTable.normalizedName, normalizeStoreName(requestedStore)))
-    .limit(1) : undefined;
-  if (requestedStore && !store?.[0]) {
-    res.json([]);
+  const store = await getSecureStore(requestedStore, userId);
+
+  if (requestedStore && !store) {
+    res.json([]); // Toko tidak ditemukan atau bukan milik user
     return;
   }
 
@@ -83,7 +105,11 @@ router.get("/stock-visits", async (req, res) => {
     })
     .from(stockVisitsTable)
     .innerJoin(storesTable, eq(stockVisitsTable.storeId, storesTable.id))
-    .where(store?.[0] ? eq(stockVisitsTable.storeId, store[0].id) : undefined)
+    .where(
+      store 
+        ? eq(stockVisitsTable.storeId, store.id) 
+        : eq(storesTable.userId, userId) // Jika tidak filter toko, ambil semua milik user
+    )
     .orderBy(desc(stockVisitsTable.visitedAt), desc(stockVisitsTable.id))
     .limit(parsed.data.limit ?? 100);
 
@@ -115,6 +141,12 @@ router.get("/stock-visits", async (req, res) => {
 });
 
 router.post("/stock-visits", async (req, res) => {
+  const userId = (req as any).user?.id;
+  if (!userId) {
+    res.status(401).json({ error: "Akses ditolak. Silakan login." });
+    return;
+  }
+
   const parsed = CreateStockVisitBody.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "Data kunjungan stock opname tidak valid." });
@@ -127,9 +159,10 @@ router.post("/stock-visits", async (req, res) => {
     return;
   }
 
-  const store = await resolveStore(parsed.data.store);
+  // Cek apakah toko ini milik user yang login
+  const store = await getSecureStore(parsed.data.store, userId);
   if (!store) {
-    res.status(500).json({ error: "Toko gagal disiapkan untuk menyimpan kunjungan." });
+    res.status(403).json({ error: "Anda tidak memiliki akses ke toko ini." });
     return;
   }
 
@@ -166,6 +199,7 @@ router.post("/stock-visits", async (req, res) => {
           line.displayQuantity + line.secondaryDisplayQuantity + line.warehouseQuantity,
       })),
     ).returning();
+
     await tx.insert(stockEntriesTable).values(
       lines.map((line) => ({
         clientId: randomUUID(),
@@ -186,6 +220,7 @@ router.post("/stock-visits", async (req, res) => {
     ).onConflictDoNothing({
       target: [stockEntriesTable.sourceType, stockEntriesTable.sourceId],
     });
+    
     for (const barcode of new Set(lines.map((line) => line.barcode))) {
       await reconcileStockLedger(tx, store.name, barcode);
     }
@@ -205,6 +240,12 @@ router.post("/stock-visits", async (req, res) => {
 });
 
 router.delete("/stock-visits/:id", async (req, res): Promise<void> => {
+  const userId = (req as any).user?.id;
+  if (!userId) {
+    res.status(401).json({ error: "Akses ditolak. Silakan login." });
+    return;
+  }
+
   const parsed = DeleteStockVisitParams.safeParse(req.params);
   if (!parsed.success) {
     res.status(400).json({ error: "ID kunjungan tidak valid." });
@@ -219,14 +260,20 @@ router.delete("/stock-visits/:id", async (req, res): Promise<void> => {
       })
       .from(stockVisitsTable)
       .innerJoin(storesTable, eq(stockVisitsTable.storeId, storesTable.id))
-      .where(eq(stockVisitsTable.id, parsed.data.id))
+      // Pastikan kunjungan ini milik toko user yang login
+      .where(and(
+        eq(stockVisitsTable.id, parsed.data.id),
+        eq(storesTable.userId, userId)
+      ))
       .limit(1);
+      
     if (!visit) return undefined;
 
     const lines = await tx
       .select({ id: stocktakeLinesTable.id, barcode: stocktakeLinesTable.barcode })
       .from(stocktakeLinesTable)
       .where(eq(stocktakeLinesTable.visitId, visit.id));
+      
     if (lines.length) {
       await tx
         .delete(stockEntriesTable)
@@ -236,19 +283,26 @@ router.delete("/stock-visits/:id", async (req, res): Promise<void> => {
         ));
     }
     await tx.delete(stockVisitsTable).where(eq(stockVisitsTable.id, visit.id));
+    
     for (const barcode of new Set(lines.map((line) => line.barcode))) {
       await reconcileStockLedger(tx, visit.store, barcode);
     }
     return visit.id;
   });
   if (!deleted) {
-    res.status(404).json({ error: "Kunjungan tidak ditemukan." });
+    res.status(404).json({ error: "Kunjungan tidak ditemukan atau Anda tidak berhak menghapusnya." });
     return;
   }
   res.sendStatus(204);
 });
 
 router.get("/stock-restocks", async (req, res) => {
+  const userId = (req as any).user?.id;
+  if (!userId) {
+    res.status(401).json({ error: "Akses ditolak. Silakan login." });
+    return;
+  }
+
   const parsed = ListStockRestocksQueryParams.safeParse(req.query);
   if (!parsed.success) {
     res.status(400).json({ error: "Parameter riwayat barang masuk tidak valid." });
@@ -256,12 +310,9 @@ router.get("/stock-restocks", async (req, res) => {
   }
 
   const requestedStore = parsed.data.store?.trim();
-  const store = requestedStore ? await db
-    .select()
-    .from(storesTable)
-    .where(eq(storesTable.normalizedName, normalizeStoreName(requestedStore)))
-    .limit(1) : undefined;
-  if (requestedStore && !store?.[0]) {
+  const store = await getSecureStore(requestedStore, userId);
+
+  if (requestedStore && !store) {
     res.json([]);
     return;
   }
@@ -284,7 +335,11 @@ router.get("/stock-restocks", async (req, res) => {
     })
     .from(stockRestocksTable)
     .innerJoin(storesTable, eq(stockRestocksTable.storeId, storesTable.id))
-    .where(store?.[0] ? eq(stockRestocksTable.storeId, store[0].id) : undefined)
+    .where(
+      store 
+        ? eq(stockRestocksTable.storeId, store.id) 
+        : eq(storesTable.userId, userId)
+    )
     .orderBy(desc(stockRestocksTable.receivedAt), desc(stockRestocksTable.id))
     .limit(parsed.data.limit ?? 100);
 
@@ -301,15 +356,21 @@ router.get("/stock-restocks", async (req, res) => {
 });
 
 router.post("/stock-restocks", async (req, res) => {
+  const userId = (req as any).user?.id;
+  if (!userId) {
+    res.status(401).json({ error: "Akses ditolak. Silakan login." });
+    return;
+  }
+
   const parsed = CreateStockRestockBody.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "Data barang masuk tidak valid." });
     return;
   }
 
-  const store = await resolveStore(parsed.data.store);
+  const store = await getSecureStore(parsed.data.store, userId);
   if (!store) {
-    res.status(500).json({ error: "Toko gagal disiapkan untuk menyimpan barang masuk." });
+    res.status(403).json({ error: "Anda tidak memiliki akses ke toko ini." });
     return;
   }
 
@@ -374,6 +435,12 @@ router.post("/stock-restocks", async (req, res) => {
 });
 
 router.patch("/stock-restocks/:id/invoice", async (req, res): Promise<void> => {
+  const userId = (req as any).user?.id;
+  if (!userId) {
+    res.status(401).json({ error: "Akses ditolak. Silakan login." });
+    return;
+  }
+
   const path = UpdateStockRestockInvoiceParams.safeParse(req.params);
   const parsed = UpdateStockRestockInvoiceBody.safeParse(req.body);
   if (!path.success || !parsed.success || !parsed.data.invoiceNumber.trim()) {
@@ -383,6 +450,16 @@ router.patch("/stock-restocks/:id/invoice", async (req, res): Promise<void> => {
 
   const recordedAt = new Date();
   const result = await db.transaction(async (tx) => {
+    // Cek kepemilikan data
+    const [existingRestock] = await tx
+      .select({ id: stockRestocksTable.id })
+      .from(stockRestocksTable)
+      .innerJoin(storesTable, eq(stockRestocksTable.storeId, storesTable.id))
+      .where(and(eq(stockRestocksTable.id, path.data.id), eq(storesTable.userId, userId)))
+      .limit(1);
+
+    if (!existingRestock) return undefined;
+
     const [updated] = await tx
       .update(stockRestocksTable)
       .set({
@@ -451,6 +528,12 @@ router.patch("/stock-restocks/:id/invoice", async (req, res): Promise<void> => {
 });
 
 router.delete("/stock-restocks/:id/invoice", async (req, res): Promise<void> => {
+  const userId = (req as any).user?.id;
+  if (!userId) {
+    res.status(401).json({ error: "Akses ditolak. Silakan login." });
+    return;
+  }
+
   const parsed = ClearStockRestockInvoiceParams.safeParse(req.params);
   if (!parsed.success) {
     res.status(400).json({ error: "ID barang masuk tidak valid." });
@@ -458,11 +541,14 @@ router.delete("/stock-restocks/:id/invoice", async (req, res): Promise<void> => 
   }
 
   const updated = await db.transaction(async (tx) => {
+    // Cek kepemilikan
     const [restock] = await tx
       .select()
       .from(stockRestocksTable)
-      .where(eq(stockRestocksTable.id, parsed.data.id))
+      .innerJoin(storesTable, eq(stockRestocksTable.storeId, storesTable.id))
+      .where(and(eq(stockRestocksTable.id, parsed.data.id), eq(storesTable.userId, userId)))
       .limit(1);
+      
     if (!restock) return undefined;
 
     await tx
@@ -496,6 +582,12 @@ router.delete("/stock-restocks/:id/invoice", async (req, res): Promise<void> => 
 });
 
 router.delete("/stock-restocks/:id", async (req, res): Promise<void> => {
+  const userId = (req as any).user?.id;
+  if (!userId) {
+    res.status(401).json({ error: "Akses ditolak. Silakan login." });
+    return;
+  }
+
   const parsed = DeleteStockRestockParams.safeParse(req.params);
   if (!parsed.success) {
     res.status(400).json({ error: "ID barang masuk tidak valid." });
@@ -503,6 +595,7 @@ router.delete("/stock-restocks/:id", async (req, res): Promise<void> => {
   }
 
   const deleted = await db.transaction(async (tx) => {
+    // Cek kepemilikan
     const [restock] = await tx
       .select({
         id: stockRestocksTable.id,
@@ -510,8 +603,10 @@ router.delete("/stock-restocks/:id", async (req, res): Promise<void> => {
         barcode: stockRestocksTable.barcode,
       })
       .from(stockRestocksTable)
-      .where(eq(stockRestocksTable.id, parsed.data.id))
+      .innerJoin(storesTable, eq(stockRestocksTable.storeId, storesTable.id))
+      .where(and(eq(stockRestocksTable.id, parsed.data.id), eq(storesTable.userId, userId)))
       .limit(1);
+      
     if (!restock) return undefined;
 
     await tx
