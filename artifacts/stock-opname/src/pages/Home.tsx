@@ -208,8 +208,16 @@ export default function Home() {
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1">
                 <label className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1"><Box size={12} /> Toko</label>
-                <input list="stores" value={storeName} onChange={e => setStoreName(e.target.value)} placeholder="Nama Toko" className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg text-sm font-medium focus:ring-2 focus:ring-emerald-500 outline-none" />
-                <datalist id="stores">{(storesQuery.data ?? []).map(s => <option key={s.name} value={s.name} />)}</datalist>
+                <select 
+                  value={storeName} 
+                  onChange={e => setStoreName(e.target.value)} 
+                  className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg text-sm font-medium focus:ring-2 focus:ring-emerald-500 outline-none appearance-none"
+                >
+                  <option value="" disabled>Pilih Toko...</option>
+                  {(storesQuery.data ?? []).map(s => (
+                    <option key={s.name} value={s.name}>{s.name}</option>
+                  ))}
+                </select>
               </div>
               <div className="space-y-1">
                 <label className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1"><RefreshCw size={12} /> Transaksi</label>
