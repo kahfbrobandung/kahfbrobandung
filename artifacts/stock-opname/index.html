@@ -1,28 +1,87 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="id">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1" />
-    <title>Erlangga</title>
-    <meta name="description" content="Aplikasi pencatatan stok dan penjualan toko Erlangga." />
+    <!-- viewport-fit=cover untuk mendukung layar iPhone (notch) -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    
+    <!-- SEO & Metadata -->
+    <title>Erlangga - Sistem Pencatatan Stok</title>
+    <meta name="description" content="Aplikasi manajemen stok, Stock Opname, dan laporan penjualan toko yang cepat dan modern." />
     <meta name="robots" content="index, follow" />
+    <meta name="author" content="Erlangga" />
+    
+    <!-- Open Graph (Untuk tampilan saat link dibagikan di WA/FB/Twitter) -->
+    <meta property="og:title" content="Erlangga - Sistem Pencatatan Stok" />
+    <meta property="og:description" content="Kelola stok dan pantau penjualan toko Anda dengan mudah." />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://kahfbrobandung-bay.vercel.app/" />
+    <!-- Ganti URL di atas dengan domain aslimu jika sudah punya -->
     
     <!-- PWA & Mobile Web App Settings -->
     <link rel="manifest" href="/manifest.json" />
     <link rel="icon" type="image/png" href="/favicon.png" />
+    
+    <!-- Apple iOS Specific -->
     <link rel="apple-touch-icon" href="/favicon.png" />
     <link rel="apple-touch-icon" sizes="180x180" href="/favicon.png" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="Erlangga" />
-    <meta name="theme-color" content="#1e3a29" />
+    <meta name="theme-color" content="#064e3b" /> <!-- Warna emerald-900 sesuai header aplikasimu -->
 
     <!-- Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Menambahkan Playfair Display untuk judul (font serif) -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Playfair+Display:ital,wght@0,600;0,700;1,600&display=swap" rel="stylesheet">
+    
+    <!-- Style untuk Loading Screen sebelum React selesai dimuat -->
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+        background-color: #f8fafc; /* slate-50 */
+        font-family: 'Inter', sans-serif;
+      }
+      .initial-loader {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        background-color: #f8fafc;
+        z-index: 9999;
+        transition: opacity 0.3s ease-out;
+      }
+      .spinner {
+        width: 40px;
+        height: 40px;
+        border: 4px solid #e2e8f0;
+        border-top-color: #059669; /* emerald-600 */
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+      }
+      .loader-text {
+        margin-top: 16px;
+        color: #064e3b;
+        font-weight: 600;
+        font-size: 14px;
+        letter-spacing: 1px;
+      }
+      @keyframes spin {
+        to { transform: rotate(360deg); }
+      }
+    </style>
   </head>
   <body>
+    <!-- Tampilan Loading awal -->
+    <div id="initial-loader" class="initial-loader">
+      <div class="spinner"></div>
+      <div class="loader-text">Memuat Erlangga...</div>
+    </div>
+
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
