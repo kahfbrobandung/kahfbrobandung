@@ -8,12 +8,28 @@ import {
   ListStockEntriesQueryParams,
   RetryStockEntrySyncParams,
 } from "@workspace/api-zod";
-import { db, stockEntriesTable, type StockEntry } from "@workspace/db";
+import { db, stockEntriesTable, storesTable, type StockEntry } from "@workspace/db";
 import { logger } from "../lib/logger";
 import { reconcileStockLedger } from "../lib/stock-ledger";
 import { syncStockEntryToSpreadsheet } from "../lib/stock-sync";
+import { normalizeStoreName } from "./helpers";
 
 const router: IRouter = Router();
+
+// --- FUNGSI BANTUAN KEAMANAN (Multi-Tenant) ---
+async function verifyStoreOwnership(storeName: string, userId: string) {
+  const [store] = await db
+    .select()
+    .from(storesTable)
+    .where(
+      and(
+        eq(storesTable.normalizedName, normalizeStoreName(storeName)),
+        eq(storesTable.userId, userId)
+      )
+    )
+    .limit(1);
+  return store;
+}
 
 function responseData(entry: StockEntry) {
   const {
@@ -61,9 +77,22 @@ async function updateSyncStatus(entry: StockEntry) {
 }
 
 router.get("/stock-entries", async (req, res) => {
+  const userId = (req as any).user?.id;
+  if (!userId) {
+    res.status(401).json({ error: "Akses ditolak. Silakan login." });
+    return;
+  }
+
   const requestedStore = typeof req.query.store === "string" ? req.query.store.trim() : "";
   if (!requestedStore) {
     res.status(400).json({ error: "Nama toko wajib diisi untuk melihat data stok." });
+    return;
+  }
+
+  // Cek apakah user berhak atas toko ini
+  const store = await verifyStoreOwnership(requestedStore, userId);
+  if (!store) {
+    res.status(403).json({ error: "Anda tidak memiliki akses ke toko ini." });
     return;
   }
 
@@ -77,7 +106,7 @@ router.get("/stock-entries", async (req, res) => {
   const entries = await db
     .select()
     .from(stockEntriesTable)
-    .where(conditions.length ? and(...conditions) : undefined)
+    .where(and(...conditions))
     .orderBy(
       desc(sql`COALESCE(${stockEntriesTable.occurredAt}, ${stockEntriesTable.createdAt})`),
       desc(stockEntriesTable.createdAt),
@@ -89,6 +118,12 @@ router.get("/stock-entries", async (req, res) => {
 });
 
 router.delete("/stock-entries/:id", async (req, res): Promise<void> => {
+  const userId = (req as any).user?.id;
+  if (!userId) {
+    res.status(401).json({ error: "Akses ditolak. Silakan login." });
+    return;
+  }
+
   const parsed = DeleteStockEntryParams.safeParse(req.params);
   if (!parsed.success) {
     res.status(400).json({ error: "ID transaksi stok tidak valid." });
@@ -103,7 +138,10 @@ router.delete("/stock-entries/:id", async (req, res): Promise<void> => {
       .limit(1);
     if (!entry) return { kind: "missing" as const };
     
-    // PERUBAHAN 1: Izinkan hapus untuk "manual" dan "adjustment"
+    // Cek apakah user memiliki akses ke toko dari entry ini
+    const store = await verifyStoreOwnership(entry.store, userId);
+    if (!store) return { kind: "missing" as const }; // Anggap tidak ada agar tidak bisa ditebak
+
     if (entry.sourceType !== "manual" && entry.sourceType !== "adjustment") {
       return { kind: "managed" as const };
     }
@@ -128,9 +166,22 @@ router.delete("/stock-entries/:id", async (req, res): Promise<void> => {
 });
 
 router.get("/stock-balances", async (req, res) => {
+  const userId = (req as any).user?.id;
+  if (!userId) {
+    res.status(401).json({ error: "Akses ditolak. Silakan login." });
+    return;
+  }
+
   const requestedStore = typeof req.query.store === "string" ? req.query.store.trim() : "";
   if (!requestedStore) {
     res.status(400).json({ error: "Nama toko wajib diisi untuk melihat saldo SKU." });
+    return;
+  }
+
+  // Cek apakah user berhak atas toko ini
+  const store = await verifyStoreOwnership(requestedStore, userId);
+  if (!store) {
+    res.status(403).json({ error: "Anda tidak memiliki akses ke toko ini." });
     return;
   }
 
@@ -237,7 +288,12 @@ router.get("/stock-balances", async (req, res) => {
 
 router.post("/stock-entries", async (req, res) => {
   try {
-    // 1. Validasi Zod dengan Error Handling yang Lebih Baik
+    const userId = (req as any).user?.id;
+    if (!userId) {
+      res.status(401).json({ error: "Akses ditolak. Silakan login." });
+      return;
+    }
+
     const parsed = CreateStockEntryBody.safeParse(req.body);
     if (!parsed.success) {
       logger.warn({ body: req.body, errors: parsed.error.format() }, "Invalid stock entry payload");
@@ -248,25 +304,26 @@ router.post("/stock-entries", async (req, res) => {
       return;
     }
 
-    // 2. Transaksi Database dengan Try-Catch
+    // Cek apakah user berhak atas toko ini
+    const store = await verifyStoreOwnership(parsed.data.store, userId);
+    if (!store) {
+      res.status(403).json({ error: "Anda tidak memiliki akses untuk menginput stok di toko ini." });
+      return;
+    }
+
     const result = await db.transaction(async (tx) => {
-      
-      // PERUBAHAN 2: Logika penentuan minus/plus yang lebih aman
       const isKoreksiMinus = parsed.data.transaction.includes("-");
       
       const [created] = await tx
         .insert(stockEntriesTable)
         .values({
           ...parsed.data,
-          // Gunakan Math.abs agar angka selalu positif dulu, lalu beri minus jika transaksinya "Koreksi -"
           quantity: isKoreksiMinus ? -Math.abs(parsed.data.quantity) : Math.abs(parsed.data.quantity),
           displayQuantity: isKoreksiMinus ? -Math.abs(parsed.data.displayQuantity) : Math.abs(parsed.data.displayQuantity),
           secondaryDisplayQuantity: isKoreksiMinus ? -Math.abs(parsed.data.secondaryDisplayQuantity) : Math.abs(parsed.data.secondaryDisplayQuantity),
           warehouseQuantity: isKoreksiMinus ? -Math.abs(parsed.data.warehouseQuantity) : Math.abs(parsed.data.warehouseQuantity),
           
-          // PERUBAHAN 3: Baca dari frontend. Kalau frontend tidak kirim, baru default ke "manual"
           sourceType: parsed.data.sourceType ?? "manual", 
-          
           sourceId: null,
           occurredAt: new Date(),
           syncStatus: "pending",
@@ -292,19 +349,15 @@ router.post("/stock-entries", async (req, res) => {
       return;
     }
 
-    // 3. Kirim Response ke Frontend TERLEBIH DAHULU agar tidak timeout
     res.status(201).json(responseData(result.entry));
 
-    // 4. Lakukan Sinkronisasi Spreadsheet di Background (Asynchronous)
     if (result.created) {
-      // Tidak menggunakan 'await' agar frontend tidak menunggu proses ini
       void updateSyncStatus(result.entry).catch((err) => {
         logger.error({ err, entryId: result.entry?.id }, "Background sync failed");
       });
     }
 
   } catch (error) {
-    // 5. Tangkap Error Transaksi/Database yang tidak terduga
     logger.error({ err: error, body: req.body }, "Failed to process stock entry");
     const message = error instanceof Error ? error.message : "Terjadi kesalahan pada server";
     res.status(500).json({ 
@@ -315,6 +368,12 @@ router.post("/stock-entries", async (req, res) => {
 });
 
 router.post("/stock-entries/:id/retry-sync", async (req, res) => {
+  const userId = (req as any).user?.id;
+  if (!userId) {
+    res.status(401).json({ error: "Akses ditolak. Silakan login." });
+    return;
+  }
+
   const parsed = RetryStockEntrySyncParams.safeParse(req.params);
   if (!parsed.success) {
     res.status(404).json({ error: "Data stok tidak ditemukan." });
@@ -331,7 +390,13 @@ router.post("/stock-entries/:id/retry-sync", async (req, res) => {
     return;
   }
   
-  // PERUBAHAN 4: Izinkan retry sync untuk adjustment juga
+  // Cek kepemilikan
+  const store = await verifyStoreOwnership(entry.store, userId);
+  if (!store) {
+    res.status(403).json({ error: "Anda tidak memiliki akses ke toko ini." });
+    return;
+  }
+  
   if (entry.sourceType !== "manual" && entry.sourceType !== "adjustment") {
     res.status(409).json({ error: "Transaksi ini tidak disinkronkan dari input manual." });
     return;
