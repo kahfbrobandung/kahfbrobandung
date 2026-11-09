@@ -1,12 +1,16 @@
 import { createClient } from '@supabase/supabase-js';
 import type { Request, Response, NextFunction } from 'express';
 
-// Pastikan kamu sudah menambahkan SUPABASE_URL dan SUPABASE_ANON_KEY di Environment Variables Vercel Backend
 const supabaseUrl = process.env.SUPABASE_URL || '';
 const supabaseKey = process.env.SUPABASE_ANON_KEY || '';
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 export async function requireAuth(req: Request, res: Response, next: NextFunction) {
+  // IZINKAN PREFLIGHT (OPTIONS) LEWAT TANPA CEK TOKEN
+  if (req.method === 'OPTIONS') {
+    return next();
+  }
+
   const authHeader = req.headers.authorization;
   
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -16,7 +20,6 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
 
   const token = authHeader.split(' ')[1];
   
-  // Cek token ke Supabase, apakah valid dan siapa usernya
   const { data: { user }, error } = await supabase.auth.getUser(token);
 
   if (error || !user) {
@@ -24,7 +27,6 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
     return;
   }
 
-  // Simpan data user ke req agar bisa dipakai di file store-sales.ts
   (req as any).user = user;
   next();
 }
