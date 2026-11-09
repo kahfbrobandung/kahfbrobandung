@@ -1,12 +1,28 @@
 import express, { type Express } from "express";
 import cors from "cors";
 import pinoHttp from "pino-http";
+import helmet from "helmet";
+import rateLimit from "express-rate-limit";
 import router from "./routes";
 import { logger } from "./lib/logger";
-import { requireAuth } from "./middlewares/auth"; // <-- IMPORT SATPAM (Perhatikan pakai 's')
+import { requireAuth } from "./middlewares/auth";
 
 const app: Express = express();
 
+// 1. Proteksi Header HTTP (XSS, Clickjacking, dll)
+app.use(helmet());
+
+// 2. Rate Limiting: Maksimal 100 request per 15 menit per IP
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, 
+  max: 100, 
+  message: { error: "Terlalu banyak permintaan. Silakan coba lagi nanti." },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+app.use("/api", limiter);
+
+// 3. Logger
 app.use(
   pinoHttp({
     logger,
@@ -27,7 +43,7 @@ app.use(
   }),
 );
 
-// Bagian CORS yang diperbarui agar mengizinkan domain Vercel
+// 4. CORS
 app.use(cors({
   origin: ['https://www.kgebandung.online', 'https://kgebandung.online', /\.vercel\.app$/],
   credentials: true,
@@ -38,10 +54,10 @@ app.use(cors({
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// PENTING: Rute health check harus di ATAS satpam agar bisa dites tanpa login
+// 5. Health Check
 app.get("/api/health", (req, res) => res.json({ status: "ok" }));
 
-// Terapkan Satpam (requireAuth) sebelum masuk ke router utama
+// 6. Satpam Auth & Router
 app.use("/api", requireAuth, router);
 
 export default app;
