@@ -26,7 +26,6 @@ import { displayStoreName, iso, normalizeStoreName } from "./helpers";
 const router: IRouter = Router();
 
 // --- FUNGSI BANTUAN KEAMANAN (Multi-Tenant) ---
-// Fungsi ini memastikan toko yang dicari benar-benar milik user yang login
 async function getSecureStore(storeName: string | undefined, userId: string) {
   if (!storeName) return undefined;
   const [store] = await db
@@ -35,7 +34,7 @@ async function getSecureStore(storeName: string | undefined, userId: string) {
     .where(
       and(
         eq(storesTable.normalizedName, normalizeStoreName(storeName)),
-        eq(storesTable.userId, userId) // <-- KUNCI KEAMANAN
+        eq(storesTable.userId, userId)
       )
     )
     .limit(1);
@@ -72,9 +71,57 @@ async function loadVisit(visitId: number) {
   };
 }
 
+// ==========================================
+// FITUR TAMBAH TOKO BARU (MULTI-TENANT)
+// ==========================================
+router.post("/stores", async (req, res) => {
+  const userId = (req as any).user?.id;
+  if (!userId) {
+    res.status(401).json({ error: "Akses ditolak. Silakan login." });
+    return;
+  }
+
+  const { name } = req.body;
+  if (!name || name.trim() === "") {
+    res.status(400).json({ error: "Nama toko wajib diisi." });
+    return;
+  }
+
+  try {
+    const normalized = normalizeStoreName(name);
+    
+    // Cek apakah nama toko sudah dipakai (di seluruh sistem)
+    const existingStore = await db
+      .select()
+      .from(storesTable)
+      .where(eq(storesTable.normalizedName, normalized))
+      .limit(1);
+
+    if (existingStore.length > 0) {
+      res.status(400).json({ error: "Nama toko sudah terdaftar. Gunakan nama lain." });
+      return;
+    }
+
+    const [newStore] = await db
+      .insert(storesTable)
+      .values({
+        name: name.trim(),
+        normalizedName: normalized,
+        userId: userId, // Ikat toko ke user yang sedang login
+      })
+      .returning();
+
+    res.status(201).json(newStore);
+  } catch (error) {
+    console.error("Gagal tambah toko:", error);
+    res.status(500).json({ error: "Gagal menambah toko. Silakan coba lagi." });
+  }
+});
+
+// ==========================================
+// RUTE KUNJUNGAN STOK OPNAME (STOCK VISITS)
+// ==========================================
 router.get("/stock-visits", async (req, res) => {
-  // PERHATIAN: Pastikan middleware auth kamu menyimpan user_id di req.user.id
-  // Jika belum, ganti dengan cara kamu mengambil ID user dari token Supabase
   const userId = (req as any).user?.id;
   if (!userId) {
     res.status(401).json({ error: "Akses ditolak. Silakan login." });
@@ -91,7 +138,7 @@ router.get("/stock-visits", async (req, res) => {
   const store = await getSecureStore(requestedStore, userId);
 
   if (requestedStore && !store) {
-    res.json([]); // Toko tidak ditemukan atau bukan milik user
+    res.json([]);
     return;
   }
 
@@ -108,7 +155,7 @@ router.get("/stock-visits", async (req, res) => {
     .where(
       store 
         ? eq(stockVisitsTable.storeId, store.id) 
-        : eq(storesTable.userId, userId) // Jika tidak filter toko, ambil semua milik user
+        : eq(storesTable.userId, userId)
     )
     .orderBy(desc(stockVisitsTable.visitedAt), desc(stockVisitsTable.id))
     .limit(parsed.data.limit ?? 100);
@@ -159,7 +206,6 @@ router.post("/stock-visits", async (req, res) => {
     return;
   }
 
-  // Cek apakah toko ini milik user yang login
   const store = await getSecureStore(parsed.data.store, userId);
   if (!store) {
     res.status(403).json({ error: "Anda tidak memiliki akses ke toko ini." });
@@ -260,7 +306,6 @@ router.delete("/stock-visits/:id", async (req, res): Promise<void> => {
       })
       .from(stockVisitsTable)
       .innerJoin(storesTable, eq(stockVisitsTable.storeId, storesTable.id))
-      // Pastikan kunjungan ini milik toko user yang login
       .where(and(
         eq(stockVisitsTable.id, parsed.data.id),
         eq(storesTable.userId, userId)
@@ -296,6 +341,9 @@ router.delete("/stock-visits/:id", async (req, res): Promise<void> => {
   res.sendStatus(204);
 });
 
+// ==========================================
+// RUTE BARANG MASUK (STOCK RESTOCKS)
+// ==========================================
 router.get("/stock-restocks", async (req, res) => {
   const userId = (req as any).user?.id;
   if (!userId) {
@@ -450,7 +498,6 @@ router.patch("/stock-restocks/:id/invoice", async (req, res): Promise<void> => {
 
   const recordedAt = new Date();
   const result = await db.transaction(async (tx) => {
-    // Cek kepemilikan data
     const [existingRestock] = await tx
       .select({ id: stockRestocksTable.id })
       .from(stockRestocksTable)
@@ -541,7 +588,6 @@ router.delete("/stock-restocks/:id/invoice", async (req, res): Promise<void> => 
   }
 
   const updated = await db.transaction(async (tx) => {
-    // Cek kepemilikan
     const [restock] = await tx
       .select()
       .from(stockRestocksTable)
@@ -595,7 +641,6 @@ router.delete("/stock-restocks/:id", async (req, res): Promise<void> => {
   }
 
   const deleted = await db.transaction(async (tx) => {
-    // Cek kepemilikan
     const [restock] = await tx
       .select({
         id: stockRestocksTable.id,
