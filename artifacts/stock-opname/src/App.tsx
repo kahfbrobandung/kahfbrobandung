@@ -7,14 +7,16 @@ import HomePage from '@/pages/Home';
 import OperationsPage from '@/pages/Operations';
 import DailySalesReport from '@/pages/DailySalesReport';
 import LoginPage from '@/pages/Login';
-import OnboardingPage from '@/pages/Onboarding'; // <-- TAMBAHAN BARU
+import OnboardingPage from '@/pages/Onboarding';
 import { supabase } from './supabase';
 import { Route, Switch, Router as WouterRouter, useLocation } from 'wouter';
 import { useHashLocation } from 'wouter/use-hash-location';
-import { setAuthTokenGetter, setBaseUrl, useListStores } from '@workspace/api-client-react'; // <-- TAMBAHAN useListStores
+import { setAuthTokenGetter, setBaseUrl, useListStores } from '@workspace/api-client-react';
 
+// 1. Arahkan ke backend Vercel
 setBaseUrl('https://kahfbrobandung-7qyj.vercel.app');
 
+// 2. Ambil token login dari Supabase secara otomatis
 setAuthTokenGetter(async () => {
   const { data: { session } } = await supabase.auth.getSession();
   return session?.access_token ?? null;
@@ -34,7 +36,7 @@ function Router() {
   const [loading, setLoading] = useState(true);
   const [, setLocation] = useLocation();
 
-  // LOGIKA BARU: Cek daftar toko user
+  // Cek daftar toko user
   const storesQuery = useListStores({
     query: { enabled: !!session }
   });
@@ -52,10 +54,12 @@ function Router() {
     return () => subscription.unsubscribe();
   }, []);
 
+  // Loading awal (mengecek sesi login)
   if (loading) {
-    return <div className="min-h-screen flex items-center justify-center">Memuat...</div>;
+    return <div className="min-h-screen flex items-center justify-center font-medium">Memuat...</div>;
   }
 
+  // Jika belum login, arahkan ke halaman Login
   if (!session) {
     return (
       <Switch>
@@ -70,7 +74,12 @@ function Router() {
     );
   }
 
-  // LOGIKA BARU: Jika sudah login tapi belum punya toko, paksa ke Onboarding
+  // PERBAIKAN: Tampilkan loading saat mengecek toko agar tidak "berkedip"
+  if (storesQuery.isLoading) {
+    return <div className="min-h-screen flex items-center justify-center font-medium text-slate-500">Mengecek data toko...</div>;
+  }
+
+  // Jika sudah login tapi belum punya toko, paksa ke Onboarding
   if (storesQuery.isSuccess && storesQuery.data.length === 0) {
     return (
       <Switch>
@@ -85,6 +94,7 @@ function Router() {
     );
   }
 
+  // Jika sudah punya toko, tampilkan halaman utama
   return (
     <Switch>
       <Route path="/" component={HomePage} />
