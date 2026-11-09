@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { and, desc, eq, gte, lt, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, lt, sql } from "drizzle-orm";
 import {
   GetDailySalesQueryParams,
   GetDailySalesResponse,
@@ -27,25 +27,36 @@ type SalesQueryRow = {
   hasStockVariance: boolean;
 };
 
-router.get("/stores", async (_req, res) => {
-  const [stores, stockEntryStores] = await Promise.all([
-    db.select({ name: storesTable.name }).from(storesTable),
-    db.select({ name: stockEntriesTable.store }).from(stockEntriesTable).groupBy(stockEntriesTable.store),
-  ]);
+// --- FUNGSI BANTUAN KEAMANAN ---
+async function getUserStores(userId: string) {
+  return db.select({ name: storesTable.name }).from(storesTable).where(eq(storesTable.userId, userId));
+}
+
+router.get("/stores", async (req, res) => {
+  const userId = (req as any).user?.id;
+  if (!userId) {
+    res.status(401).json({ error: "Akses ditolak. Silakan login." });
+    return;
+  }
+
+  // Hanya ambil toko milik user yang sedang login
+  const stores = await getUserStores(userId);
+  
   const namesByNormalized = new Map<string, string>();
   for (const store of stores) {
     namesByNormalized.set(normalizeStoreName(store.name), displayStoreName(store.name));
   }
-  for (const entryStore of stockEntryStores) {
-    const normalized = normalizeStoreName(entryStore.name);
-    if (normalized && !namesByNormalized.has(normalized)) {
-      namesByNormalized.set(normalized, displayStoreName(entryStore.name));
-    }
-  }
+
   res.json([...namesByNormalized.values()].sort((a, b) => a.localeCompare(b, "id")).map((name) => ({ name })));
 });
 
 router.get("/daily-sales", async (req, res): Promise<void> => {
+  const userId = (req as any).user?.id;
+  if (!userId) {
+    res.status(401).json({ error: "Akses ditolak. Silakan login." });
+    return;
+  }
+
   const fromParam = typeof req.query.from === "string" ? req.query.from.trim() : "";
   const toParam = typeof req.query.to === "string" ? req.query.to.trim() : "";
   if (!fromParam || !toParam) {
@@ -72,15 +83,33 @@ router.get("/daily-sales", async (req, res): Promise<void> => {
   toExclusive.setUTCDate(toExclusive.getUTCDate() + 1);
 
   const requestedStore = parsed.data.store?.trim();
-  const normalizedStore = requestedStore ? normalizeStoreName(requestedStore) : undefined;
+  let storeNames: string[] = [];
+
+  if (requestedStore) {
+    const normalizedStore = normalizeStoreName(requestedStore);
+    const userStores = await getUserStores(userId);
+    const match = userStores.find(s => normalizeStoreName(s.name) === normalizedStore);
+    if (!match) {
+      res.json([]); // Toko bukan milik user
+      return;
+    }
+    storeNames = [match.name];
+  } else {
+    const userStores = await getUserStores(userId);
+    if (userStores.length === 0) {
+      res.json([]);
+      return;
+    }
+    storeNames = userStores.map(s => s.name);
+  }
+
   const conditions = [
     gte(stockEntriesTable.createdAt, from),
     lt(stockEntriesTable.createdAt, toExclusive),
     sql`lower(trim(${stockEntriesTable.transaction})) = 'penjualan'`,
-    ...(normalizedStore
-      ? [sql`lower(regexp_replace(trim(${stockEntriesTable.store}), '[[:space:]]+', ' ', 'g')) = ${normalizedStore}`]
-      : []),
+    inArray(stockEntriesTable.store, storeNames),
   ];
+
   const rows = await db
     .select({
       id: stockEntriesTable.id,
@@ -106,6 +135,12 @@ router.get("/daily-sales", async (req, res): Promise<void> => {
 });
 
 router.get("/sales-activity", async (req, res): Promise<void> => {
+  const userId = (req as any).user?.id;
+  if (!userId) {
+    res.status(401).json({ error: "Akses ditolak. Silakan login." });
+    return;
+  }
+
   const fromParam = typeof req.query.from === "string" ? req.query.from.trim() : "";
   const toParam = typeof req.query.to === "string" ? req.query.to.trim() : "";
   if (!fromParam || !toParam) {
@@ -132,22 +167,41 @@ router.get("/sales-activity", async (req, res): Promise<void> => {
   toExclusive.setUTCDate(toExclusive.getUTCDate() + 1);
 
   const requestedStore = parsed.data.store?.trim();
-  const normalizedRequestedStore = requestedStore ? normalizeStoreName(requestedStore) : undefined;
+  let storeNames: string[] = [];
+
+  if (requestedStore) {
+    const normalizedStore = normalizeStoreName(requestedStore);
+    const userStores = await getUserStores(userId);
+    const match = userStores.find(s => normalizeStoreName(s.name) === normalizedStore);
+    if (!match) {
+      res.json([]);
+      return;
+    }
+    storeNames = [match.name];
+  } else {
+    const userStores = await getUserStores(userId);
+    if (userStores.length === 0) {
+      res.json([]);
+      return;
+    }
+    storeNames = userStores.map(s => s.name);
+  }
+
   const limit = parsed.data.limit;
   const occurredAt = sql`COALESCE(${stockEntriesTable.occurredAt}, ${stockEntriesTable.createdAt})`;
   const activityConditions = [
     gte(occurredAt, from),
     lt(occurredAt, toExclusive),
-    ...(normalizedRequestedStore
-      ? [sql`lower(regexp_replace(trim(${stockEntriesTable.store}), '[[:space:]]+', ' ', 'g')) = ${normalizedRequestedStore}`]
-      : []),
+    inArray(stockEntriesTable.store, storeNames),
   ];
+
   const ledgerEntries = await db
     .select()
     .from(stockEntriesTable)
     .where(and(...activityConditions))
     .orderBy(desc(occurredAt), desc(stockEntriesTable.createdAt), desc(stockEntriesTable.id))
     .limit(limit);
+
   const activity = ledgerEntries.map((entry) => {
     const isVisitCorrection = entry.sourceType === "visit_correction";
     const isRestock = entry.sourceType === "restock";
@@ -193,6 +247,12 @@ router.get("/sales-activity", async (req, res): Promise<void> => {
 });
 
 router.get("/sales-monitor", async (req, res) => {
+  const userId = (req as any).user?.id;
+  if (!userId) {
+    res.status(401).json({ error: "Akses ditolak. Silakan login." });
+    return;
+  }
+
   const fromParam = typeof req.query.from === "string" ? req.query.from.trim() : "";
   const toParam = typeof req.query.to === "string" ? req.query.to.trim() : "";
   if (!fromParam || !toParam) {
@@ -225,10 +285,29 @@ router.get("/sales-monitor", async (req, res) => {
   const requestedStoreKey = parsed.data.store?.trim()
     ? normalizeStoreKey(parsed.data.store)
     : undefined;
-  const storeFilter = requestedStoreKey
-    ? sql`AND lower(regexp_replace(trim(e.store), '[[:space:]]+', ' ', 'g')) = ${requestedStoreKey}`
-    : sql``;
-    
+
+  const userStores = await getUserStores(userId);
+  if (userStores.length === 0) {
+    res.json({ summary: { totalSold: 0, totalRestocked: 0, activeStores: 0, trackedSkus: 0, visitComparisons: 0, varianceCount: 0 }, dailyTrend: [], stores: [], products: [], calculations: [] });
+    return;
+  }
+
+  let allowedStoreKeys: string[] = [];
+  if (requestedStoreKey) {
+    const match = userStores.find(s => normalizeStoreKey(s.name) === requestedStoreKey);
+    if (!match) {
+      res.json({ summary: { totalSold: 0, totalRestocked: 0, activeStores: 0, trackedSkus: 0, visitComparisons: 0, varianceCount: 0 }, dailyTrend: [], stores: [], products: [], calculations: [] });
+      return;
+    }
+    allowedStoreKeys = [requestedStoreKey];
+  } else {
+    allowedStoreKeys = userStores.map(s => normalizeStoreKey(s.name));
+  }
+
+  // Buat format SQL untuk filter array dengan aman
+  const storeFilterSql = sql.join(allowedStoreKeys.map(key => sql`${key}`), sql`, `);
+  const storeFilter = sql`AND lower(regexp_replace(trim(e.store), '[[:space:]]+', ' ', 'g')) IN (${storeFilterSql})`;
+
   const result = await db.execute<SalesQueryRow>(sql`
     WITH numbered_visits AS (
       SELECT
@@ -260,7 +339,7 @@ router.get("/sales-monitor", async (req, res) => {
       WHERE e.source_type = 'visit_correction'
         AND e.counted_quantity IS NOT NULL
         AND e.occurred_at < ${toExclusive}
-      ${storeFilter}
+        ${storeFilter}
     ),
     intervals AS (
       SELECT
