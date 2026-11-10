@@ -5,11 +5,24 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { useToast } from "@/hooks/use-toast";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Eye, EyeOff } from "lucide-react";
+
+// Helper untuk menerjemahkan error Supabase ke Bahasa Indonesia
+const translateAuthError = (msg: string) => {
+  const lower = msg.toLowerCase();
+  if (lower.includes("invalid login credentials")) return "Email atau password salah.";
+  if (lower.includes("user already registered")) return "Email sudah terdaftar. Silakan login.";
+  if (lower.includes("password should be at least")) return "Password minimal harus 6 karakter.";
+  if (lower.includes("email not confirmed")) return "Email belum diverifikasi. Silakan cek kotak masuk/spam Anda.";
+  if (lower.includes("rate limit")) return "Terlalu banyak percobaan. Silakan tunggu beberapa saat.";
+  if (lower.includes("invalid email")) return "Format email tidak valid.";
+  return msg;
+};
 
 export default function Login() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [isRegister, setIsRegister] = useState(false);
   const [isForgotPassword, setIsForgotPassword] = useState(false);
@@ -18,21 +31,39 @@ export default function Login() {
 
   const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault();
+    const cleanEmail = email.trim();
+
+    // Validasi frontend (cegah request sia-sia ke server)
+    if (password.length < 6) {
+      return toast({ title: "Perhatian", description: "Password minimal 6 karakter.", variant: "destructive" });
+    }
+
     setLoading(true);
     try {
       if (isRegister) {
-        const { error } = await supabase.auth.signUp({ email, password });
+        const { data, error } = await supabase.auth.signUp({ email: cleanEmail, password });
         if (error) throw error;
-        toast({ title: "Registrasi Berhasil", description: "Silakan login." });
-        setIsRegister(false);
+        
+        // Jika Supabase tidak mewajibkan verifikasi email (auto login)
+        if (data.session) {
+          toast({ title: "Registrasi Berhasil", description: "Selamat datang di Erlangga!" });
+          setLocation("/");
+        } else {
+          toast({ title: "Registrasi Berhasil", description: "Silakan cek email Anda untuk verifikasi, lalu login." });
+          setIsRegister(false);
+        }
       } else {
-        const { error } = await supabase.auth.signInWithPassword({ email, password });
+        const { error } = await supabase.auth.signInWithPassword({ email: cleanEmail, password });
         if (error) throw error;
-        toast({ title: "Login Berhasil", description: "Selamat datang!" });
+        toast({ title: "Login Berhasil", description: "Selamat datang kembali!" });
         setLocation("/");
       }
     } catch (error: any) {
-      toast({ title: "Error", description: error.message, variant: "destructive" });
+      toast({ 
+        title: "Gagal", 
+        description: translateAuthError(error.message), 
+        variant: "destructive" 
+      });
     } finally {
       setLoading(false);
     }
@@ -40,21 +71,27 @@ export default function Login() {
 
   const handleForgotPassword = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!email) return toast({ title: "Perhatian", description: "Masukkan email Anda dulu.", variant: "destructive" });
+    const cleanEmail = email.trim();
+    if (!cleanEmail) return toast({ title: "Perhatian", description: "Masukkan email Anda dulu.", variant: "destructive" });
     
     setLoading(true);
     try {
-      // Mengirim email reset password, arahkan link ke halaman reset-password aplikasi kita
-      const redirectUrl = window.location.origin + '/#/reset-password';
-      const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      // PERBAIKAN: Hapus '/#/' agar tidak 404 saat link diklik
+      const redirectUrl = window.location.origin + '/reset-password';
+      
+      const { error } = await supabase.auth.resetPasswordForEmail(cleanEmail, {
         redirectTo: redirectUrl,
       });
       if (error) throw error;
       
-      toast({ title: "Email Terkirim", description: "Silakan cek kotak masuk/spam email Anda untuk link reset password." });
+      // Standar keamanan: Jangan bocorkan apakah email terdaftar atau tidak
+      toast({ 
+        title: "Email Terkirim", 
+        description: "Jika email Anda terdaftar, silakan cek kotak masuk/spam untuk link reset password." 
+      });
       setIsForgotPassword(false);
     } catch (error: any) {
-      toast({ title: "Gagal", description: error.message, variant: "destructive" });
+      toast({ title: "Gagal", description: translateAuthError(error.message), variant: "destructive" });
     } finally {
       setLoading(false);
     }
@@ -113,14 +150,23 @@ export default function Login() {
                 </div>
                 <div className="space-y-2">
                   <label className="text-xs font-bold text-slate-500 uppercase">Password</label>
-                  <Input 
-                    type="password" 
-                    placeholder="••••••••" 
-                    value={password} 
-                    onChange={(e) => setPassword(e.target.value)} 
-                    required 
-                    className="bg-sky-50/50 dark:bg-slate-950 border-sky-200 dark:border-slate-800 focus-visible:ring-sky-500"
-                  />
+                  <div className="relative">
+                    <Input 
+                      type={showPassword ? "text" : "password"} 
+                      placeholder="••••••••" 
+                      value={password} 
+                      onChange={(e) => setPassword(e.target.value)} 
+                      required 
+                      className="bg-sky-50/50 dark:bg-slate-950 border-sky-200 dark:border-slate-800 focus-visible:ring-sky-500 pr-10"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword(!showPassword)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
+                    >
+                      {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                    </button>
+                  </div>
                 </div>
                 {!isRegister && (
                   <div className="flex justify-end">
@@ -140,7 +186,10 @@ export default function Login() {
               <div className="mt-6 text-center text-sm">
                 <button 
                   type="button" 
-                  onClick={() => setIsRegister(!isRegister)} 
+                  onClick={() => {
+                    setIsRegister(!isRegister);
+                    setPassword(""); // Reset password saat ganti mode
+                  }} 
                   className="text-sky-600 hover:text-sky-800 font-semibold hover:underline transition-colors"
                 >
                   {isRegister ? "Sudah punya akun? Masuk" : "Belum punya akun? Daftar"}
