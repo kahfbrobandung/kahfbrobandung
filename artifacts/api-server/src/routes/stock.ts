@@ -89,7 +89,6 @@ router.get("/stock-entries", async (req, res) => {
     return;
   }
 
-  // Cek apakah user berhak atas toko ini
   const store = await verifyStoreOwnership(requestedStore, userId);
   if (!store) {
     res.status(403).json({ error: "Anda tidak memiliki akses ke toko ini." });
@@ -138,9 +137,8 @@ router.delete("/stock-entries/:id", async (req, res): Promise<void> => {
       .limit(1);
     if (!entry) return { kind: "missing" as const };
     
-    // Cek apakah user memiliki akses ke toko dari entry ini
     const store = await verifyStoreOwnership(entry.store, userId);
-    if (!store) return { kind: "missing" as const }; // Anggap tidak ada agar tidak bisa ditebak
+    if (!store) return { kind: "missing" as const };
 
     if (entry.sourceType !== "manual" && entry.sourceType !== "adjustment") {
       return { kind: "managed" as const };
@@ -165,6 +163,9 @@ router.delete("/stock-entries/:id", async (req, res): Promise<void> => {
   }));
 });
 
+// ============================================================================
+// PERBAIKAN TOTAL: LOGIKA STOK SALDO (Kunjungan Terakhir + Pergerakan Setelahnya)
+// ============================================================================
 router.get("/stock-balances", async (req, res) => {
   const userId = (req as any).user?.id;
   if (!userId) {
@@ -178,7 +179,6 @@ router.get("/stock-balances", async (req, res) => {
     return;
   }
 
-  // Cek apakah user berhak atas toko ini
   const store = await verifyStoreOwnership(requestedStore, userId);
   if (!store) {
     res.status(403).json({ error: "Anda tidak memiliki akses ke toko ini." });
@@ -192,6 +192,7 @@ router.get("/stock-balances", async (req, res) => {
   }
 
   const storeKey = requestedStore.normalize("NFKC").replace(/\s+/g, " ").toLocaleLowerCase("id-ID");
+  
   type LedgerBalanceRow = {
     store: string;
     product: string;
@@ -203,73 +204,84 @@ router.get("/stock-balances", async (req, res) => {
     entryCount: number | string;
     updatedAt: Date | string;
   };
+
+  // QUERY BARU: Ambil angka dari SO terakhir, lalu hitung selisih pergerakan setelahnya
   const result = await db.execute<LedgerBalanceRow>(sql`
-    WITH ledger_totals AS (
+    WITH latest_visits AS (
+      SELECT DISTINCT ON (lower(regexp_replace(trim(store), '[[:space:]]+', ' ', 'g')), barcode)
+        lower(regexp_replace(trim(store), '[[:space:]]+', ' ', 'g')) AS store_key,
+        store, 
+        product, 
+        barcode, 
+        counted_quantity AS base_quantity, 
+        counted_display_quantity AS base_display_quantity,
+        counted_secondary_display_quantity AS base_secondary_display_quantity,
+        counted_warehouse_quantity AS base_warehouse_quantity,
+        COALESCE(occurred_at, created_at) AS visit_at
+      FROM stock_entries
+      WHERE source_type = 'visit_correction' 
+        AND counted_quantity IS NOT NULL
+        AND lower(regexp_replace(trim(store), '[[:space:]]+', ' ', 'g')) = ${storeKey}
+      ORDER BY 
+        lower(regexp_replace(trim(store), '[[:space:]]+', ' ', 'g')), 
+        barcode, 
+        COALESCE(occurred_at, created_at) DESC
+    ),
+    movements_after_visit AS (
       SELECT
         lower(regexp_replace(trim(e.store), '[[:space:]]+', ' ', 'g')) AS store_key,
         e.barcode,
         SUM(
           CASE
-            WHEN e.source_type IN ('visit_correction', 'restock_invoice') THEN e.quantity
+            WHEN e.source_type IN ('restock', 'restock_invoice') THEN e.quantity
             WHEN lower(trim(e.transaction)) = 'penjualan' THEN -e.quantity
             ELSE e.quantity
           END
-        ) AS total_quantity,
+        ) AS delta_quantity,
         SUM(
           CASE
-            WHEN e.source_type IN ('visit_correction', 'restock_invoice') THEN e.display_quantity
+            WHEN e.source_type IN ('restock', 'restock_invoice') THEN e.display_quantity
             WHEN lower(trim(e.transaction)) = 'penjualan' THEN -e.display_quantity
             ELSE e.display_quantity
           END
-        ) AS display_quantity,
+        ) AS delta_display_quantity,
         SUM(
           CASE
-            WHEN e.source_type IN ('visit_correction', 'restock_invoice') THEN e.secondary_display_quantity
+            WHEN e.source_type IN ('restock', 'restock_invoice') THEN e.secondary_display_quantity
             WHEN lower(trim(e.transaction)) = 'penjualan' THEN -e.secondary_display_quantity
             ELSE e.secondary_display_quantity
           END
-        ) AS secondary_display_quantity,
+        ) AS delta_secondary_display_quantity,
         SUM(
           CASE
-            WHEN e.source_type IN ('visit_correction', 'restock_invoice') THEN e.warehouse_quantity
+            WHEN e.source_type IN ('restock', 'restock_invoice') THEN e.warehouse_quantity
             WHEN lower(trim(e.transaction)) = 'penjualan' THEN -e.warehouse_quantity
             ELSE e.warehouse_quantity
           END
-        ) AS warehouse_quantity,
-        COUNT(*) AS entry_count,
-        MAX(COALESCE(e.occurred_at, e.created_at)) AS updated_at
+        ) AS delta_warehouse_quantity,
+        COUNT(*) AS movement_count,
+        MAX(COALESCE(e.occurred_at, e.created_at)) AS last_movement_at
       FROM stock_entries e
+      INNER JOIN latest_visits lv ON 
+        lv.store_key = lower(regexp_replace(trim(e.store), '[[:space:]]+', ' ', 'g')) 
+        AND lv.barcode = e.barcode
       WHERE lower(regexp_replace(trim(e.store), '[[:space:]]+', ' ', 'g')) = ${storeKey}
+        AND COALESCE(e.occurred_at, e.created_at) > lv.visit_at
       GROUP BY lower(regexp_replace(trim(e.store), '[[:space:]]+', ' ', 'g')), e.barcode
-    ),
-    latest_products AS (
-      SELECT DISTINCT ON (lower(regexp_replace(trim(e.store), '[[:space:]]+', ' ', 'g')), e.barcode)
-        lower(regexp_replace(trim(e.store), '[[:space:]]+', ' ', 'g')) AS store_key,
-        e.store,
-        e.product,
-        e.barcode
-      FROM stock_entries e
-      WHERE lower(regexp_replace(trim(e.store), '[[:space:]]+', ' ', 'g')) = ${storeKey}
-      ORDER BY
-        lower(regexp_replace(trim(e.store), '[[:space:]]+', ' ', 'g')),
-        e.barcode,
-        COALESCE(e.occurred_at, e.created_at) DESC,
-        e.created_at DESC,
-        e.id DESC
     )
-    SELECT
-      p.store,
-      p.product,
-      p.barcode,
-      t.total_quantity AS "totalQuantity",
-      t.display_quantity AS "displayQuantity",
-      t.secondary_display_quantity AS "secondaryDisplayQuantity",
-      t.warehouse_quantity AS "warehouseQuantity",
-      t.entry_count AS "entryCount",
-      t.updated_at AS "updatedAt"
-    FROM ledger_totals t
-    INNER JOIN latest_products p ON p.store_key = t.store_key AND p.barcode = t.barcode
-    ORDER BY "updatedAt" DESC, p.product ASC
+    SELECT 
+      lv.store, 
+      lv.product, 
+      lv.barcode,
+      (lv.base_quantity + COALESCE(m.delta_quantity, 0))::int AS "totalQuantity",
+      (lv.base_display_quantity + COALESCE(m.delta_display_quantity, 0))::int AS "displayQuantity",
+      (lv.base_secondary_display_quantity + COALESCE(m.delta_secondary_display_quantity, 0))::int AS "secondaryDisplayQuantity",
+      (lv.base_warehouse_quantity + COALESCE(m.delta_warehouse_quantity, 0))::int AS "warehouseQuantity",
+      (1 + COALESCE(m.movement_count, 0))::int AS "entryCount",
+      GREATEST(lv.visit_at, COALESCE(m.last_movement_at, lv.visit_at)) AS "updatedAt"
+    FROM latest_visits lv
+    LEFT JOIN movements_after_visit m ON m.store_key = lv.store_key AND m.barcode = lv.barcode
+    ORDER BY "updatedAt" DESC, lv.product ASC
     ${parsed.data.limit ? sql`LIMIT ${parsed.data.limit}` : sql``}
   `);
 
@@ -304,7 +316,6 @@ router.post("/stock-entries", async (req, res) => {
       return;
     }
 
-    // Cek apakah user berhak atas toko ini
     const store = await verifyStoreOwnership(parsed.data.store, userId);
     if (!store) {
       res.status(403).json({ error: "Anda tidak memiliki akses untuk menginput stok di toko ini." });
@@ -390,7 +401,6 @@ router.post("/stock-entries/:id/retry-sync", async (req, res) => {
     return;
   }
   
-  // Cek kepemilikan
   const store = await verifyStoreOwnership(entry.store, userId);
   if (!store) {
     res.status(403).json({ error: "Anda tidak memiliki akses ke toko ini." });
