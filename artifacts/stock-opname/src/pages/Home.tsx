@@ -10,7 +10,7 @@ import {
 } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Link, useLocation } from 'wouter';
-import { supabase } from '@/supabase'; // <-- INI DIPERBAIKI (Hapus 'lib/')
+import { supabase } from '@/supabase'; 
 import {
   getGetSalesActivityQueryKey,
   getGetSalesMonitorQueryKey,
@@ -218,9 +218,12 @@ export default function Home() {
             </button>
           </div>
         </div>
+        
+        {/* TOMBOL NAVIGASI (SUDAH DITAMBAH LANGGANAN) */}
         <div className="flex gap-2">
-          <Link href="/operasional" className="flex-1 bg-white/10 hover:bg-white/20 transition-colors rounded-xl py-2 text-center text-xs font-semibold shadow-sm">Kunjungan SO</Link>
-          <Link href="/dashboard" className="flex-1 bg-white/10 hover:bg-white/20 transition-colors rounded-xl py-2 text-center text-xs font-semibold shadow-sm">Laporan</Link>
+          <Link href="/operasional" className="flex-1 bg-white/10 hover:bg-white/20 transition-colors rounded-xl py-2 text-center text-[10px] sm:text-xs font-semibold shadow-sm">Kunjungan SO</Link>
+          <Link href="/dashboard" className="flex-1 bg-white/10 hover:bg-white/20 transition-colors rounded-xl py-2 text-center text-[10px] sm:text-xs font-semibold shadow-sm">Laporan</Link>
+          <Link href="/subscription" className="flex-1 bg-white/10 hover:bg-white/20 transition-colors rounded-xl py-2 text-center text-[10px] sm:text-xs font-semibold shadow-sm">Langganan</Link>
         </div>
       </header>
 
