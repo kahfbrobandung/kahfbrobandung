@@ -4,6 +4,7 @@ import pinoHttp from "pino-http";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 import router from "./routes";
+import webhookRouter from "./routes/webhook"; // <-- IMPORT WEBHOOK BARU
 import { logger } from "./lib/logger";
 import { requireAuth } from "./middlewares/auth";
 
@@ -54,10 +55,14 @@ app.use(cors({
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// 5. Health Check
+// 5. WEBHOOK ROUTE (Wajib diletakkan SEBELUM requireAuth)
+// Agar Lynk.id bisa mengirim data tanpa perlu token login (JWT)
+app.use("/api", webhookRouter);
+
+// 6. Health Check
 app.get("/api/health", (req, res) => res.json({ status: "ok" }));
 
-// 6. Satpam Auth & Router
+// 7. Satpam Auth & Router untuk aplikasi utama
 app.use("/api", requireAuth, router);
 
 export default app;
