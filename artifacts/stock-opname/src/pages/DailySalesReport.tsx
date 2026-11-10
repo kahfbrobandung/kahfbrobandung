@@ -27,16 +27,42 @@ export default function DailySalesReport() {
   // Filter hanya barang yang benar-benar terjual (di atas 0)
   const soldItems = salesMonitor?.calculations?.filter((item) => item.soldQuantity > 0) || [];
 
-  // 1. Kelompokkan barang berdasarkan tanggal SO
+  // 1. PERBAIKAN: Kelompokkan & Gabungkan (Agregasi) barang berdasarkan tanggal SO
   const groupedItems = useMemo(() => {
-    const groups: Record<string, typeof soldItems> = {};
+    const groups: Record<string, Record<string, any>> = {};
+    
     soldItems.forEach((item) => {
-      // Ambil format YYYY-MM-DD untuk sorting
       const dateStr = new Date(item.currentVisitAt).toISOString().split("T")[0];
-      if (!groups[dateStr]) groups[dateStr] = [];
-      groups[dateStr].push(item);
+      
+      if (!groups[dateStr]) groups[dateStr] = {};
+      
+      const key = item.barcode;
+      if (!groups[dateStr][key]) {
+        // Jika barang belum ada di tanggal ini, buat data awal
+        groups[dateStr][key] = {
+          ...item,
+          soldQuantity: 0,
+          restockQuantity: 0,
+          stockEntryAdjustment: 0,
+        };
+      }
+      
+      // Jumlahkan kuantitasnya
+      groups[dateStr][key].soldQuantity += item.soldQuantity;
+      groups[dateStr][key].restockQuantity += item.restockQuantity;
+      groups[dateStr][key].stockEntryAdjustment += item.stockEntryAdjustment;
+      
+      // Ambil data stok terakhir dari kunjungan paling akhir di hari itu
+      groups[dateStr][key].currentStock = item.currentStock;
+      groups[dateStr][key].previousStock = item.previousStock;
     });
-    return groups;
+    
+    // Ubah kembali ke bentuk array agar mudah dirender
+    const result: Record<string, any[]> = {};
+    Object.keys(groups).forEach(date => {
+      result[date] = Object.values(groups[date]);
+    });
+    return result;
   }, [soldItems]);
 
   // 2. Ambil semua tanggal unik dan urutkan dari yang terbaru
@@ -73,7 +99,7 @@ export default function DailySalesReport() {
               value={dateRange.from}
               onChange={(e) => {
                 setDateRange({ ...dateRange, from: e.target.value });
-                setVisibleDatesCount(1); // Reset tampilan ke tanggal terbaru
+                setVisibleDatesCount(1);
               }}
               className="w-full px-3 py-2 bg-sky-50 dark:bg-slate-950 border border-sky-200 dark:border-slate-800 rounded-xl text-sm outline-none focus:ring-2 focus:ring-sky-500 text-slate-800 dark:text-slate-100"
             />
@@ -85,7 +111,7 @@ export default function DailySalesReport() {
               value={dateRange.to}
               onChange={(e) => {
                 setDateRange({ ...dateRange, to: e.target.value });
-                setVisibleDatesCount(1); // Reset tampilan ke tanggal terbaru
+                setVisibleDatesCount(1);
               }}
               className="w-full px-3 py-2 bg-sky-50 dark:bg-slate-950 border border-sky-200 dark:border-slate-800 rounded-xl text-sm outline-none focus:ring-2 focus:ring-sky-500 text-slate-800 dark:text-slate-100"
             />
@@ -142,7 +168,7 @@ export default function DailySalesReport() {
                       </h4>
                     </div>
 
-                    {/* List Barang di Tanggal Tersebut */}
+                    {/* List Barang di Tanggal Tersebut (Hasil Gabungan) */}
                     <ul className="space-y-4">
                       {groupedItems[date].map((item, index) => (
                         <li key={`${item.barcode}-${index}`} className="border border-sky-100 dark:border-slate-800 rounded-xl p-4 shadow-sm bg-white dark:bg-slate-900 hover:border-sky-300 dark:hover:border-sky-700 transition-colors">
