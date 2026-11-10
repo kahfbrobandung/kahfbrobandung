@@ -1,131 +1,106 @@
-import { useState, useEffect } from 'react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { Toaster } from '@/components/ui/toaster';
-import { TooltipProvider } from '@/components/ui/tooltip';
-import NotFound from '@/pages/not-found';
-import HomePage from '@/pages/Home';
-import OperationsPage from '@/pages/Operations';
-import DailySalesReport from '@/pages/DailySalesReport';
-import LoginPage from '@/pages/Login';
-import OnboardingPage from '@/pages/Onboarding';
-import ResetPasswordPage from '@/pages/ResetPassword'; // <-- IMPORT HALAMAN BARU
-import { supabase } from './supabase'; 
-import { Route, Switch, Router as WouterRouter, useLocation } from 'wouter';
-import { useHashLocation } from 'wouter/use-hash-location';
-import { setAuthTokenGetter, setBaseUrl, useListStores } from '@workspace/api-client-react';
+import { useState, useEffect } from "react";
+import { supabase } from "@/supabase"; // <-- PERBAIKAN: Menggunakan alias @ agar aman & konsisten
+import { useLocation } from "wouter";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
+import { useToast } from "@/hooks/use-toast";
+import { Loader2, KeyRound, CheckCircle2 } from "lucide-react";
 
-// 1. Arahkan ke backend Vercel
-setBaseUrl('https://kahfbrobandung-7qyj.vercel.app');
-
-// 2. Ambil token login dari Supabase secara otomatis
-setAuthTokenGetter(async () => {
-  const { data: { session } } = await supabase.auth.getSession();
-  return session?.access_token ?? null;
-});
-
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      staleTime: 5 * 60 * 1000,
-      refetchOnWindowFocus: false,
-    },
-  },
-});
-
-function Router() {
-  const [session, setSession] = useState<any>(null);
-  const [loading, setLoading] = useState(true);
+export default function ResetPassword() {
+  const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [isSuccess, setIsSuccess] = useState(false);
+  const [errorMsg, setErrorMsg] = useState("");
   const [, setLocation] = useLocation();
+  const { toast } = useToast();
 
-  // Cek daftar toko user
-  const storesQuery = useListStores({
-    query: { enabled: !!session }
-  });
-
+  // Memastikan user benar-benar datang dari link email (sesi recovery valid)
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
-      setLoading(false);
+    supabase.auth.onAuthStateChange(async (event) => {
+      if (event === "PASSWORD_RECOVERY") {
+        console.log("Sesi reset password valid.");
+      }
     });
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session);
-    });
-
-    return () => subscription.unsubscribe();
   }, []);
 
-  // Loading awal (mengecek sesi login)
-  if (loading) {
-    return <div className="min-h-screen flex items-center justify-center font-medium">Memuat...</div>;
-  }
+  const handleUpdatePassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setErrorMsg("");
 
-  // Jika belum login
-  if (!session) {
-    return (
-      <Switch>
-        <Route path="/login" component={LoginPage} />
-        <Route path="/reset-password" component={ResetPasswordPage} /> {/* Rute saat belum login */}
-        <Route>
-          {() => {
-            setLocation('/login');
-            return null;
-          }}
-        </Route>
-      </Switch>
-    );
-  }
+    try {
+      const { error } = await supabase.auth.updateUser({ password });
+      if (error) throw error;
+      
+      setIsSuccess(true);
+      toast({ title: "Berhasil", description: "Password berhasil diubah. Mengalihkan ke halaman login..." });
+      
+      // Logout paksa agar user login ulang dengan password baru
+      await supabase.auth.signOut();
+      setTimeout(() => setLocation("/login"), 2500);
+      
+    } catch (error: any) {
+      setErrorMsg(error.message || "Gagal mengubah password. Link mungkin sudah kedaluwarsa.");
+      toast({ title: "Gagal", description: error.message, variant: "destructive" });
+    } finally {
+      setLoading(false);
+    }
+  };
 
-  // Tampilkan loading saat mengecek toko agar tidak "berkedip"
-  if (storesQuery.isLoading) {
-    return <div className="min-h-screen flex items-center justify-center font-medium text-slate-500">Mengecek data toko...</div>;
-  }
-
-  // Jika sudah login tapi belum punya toko, paksa ke Onboarding
-  if (storesQuery.isSuccess && storesQuery.data?.length === 0) {
-    return (
-      <Switch>
-        <Route path="/onboarding" component={OnboardingPage} />
-        <Route path="/reset-password" component={ResetPasswordPage} /> {/* Rute saat sesi sementara reset password aktif */}
-        <Route>
-          {() => {
-            setLocation('/onboarding');
-            return null;
-          }}
-        </Route>
-      </Switch>
-    );
-  }
-
-  // Jika sudah punya toko, tampilkan halaman utama
   return (
-    <Switch>
-      <Route path="/" component={HomePage} />
-      <Route path="/operasional" component={OperationsPage} />
-      <Route path="/dashboard" component={DailySalesReport} />
-      <Route path="/reset-password" component={ResetPasswordPage} /> {/* Rute saat sudah login (dari link email) */}
-      <Route path="/login">
-        {() => {
-          setLocation('/');
-          return null;
-        }}
-      </Route>
-      <Route component={NotFound} />
-    </Switch>
+    <div className="min-h-screen flex items-center justify-center bg-sky-50/50 dark:bg-slate-950 p-4">
+      <Card className="w-full max-w-md shadow-xl border-sky-100 dark:border-slate-800">
+        <CardHeader className="text-center pb-6">
+          <div className="flex justify-center mb-4 text-sky-600">
+            <KeyRound size={40} />
+          </div>
+          <CardTitle className="text-2xl font-serif font-bold text-sky-700 dark:text-sky-500">Buat Password Baru</CardTitle>
+          <CardDescription className="text-slate-500">
+            Masukkan password baru untuk akun Erlangga Anda.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {isSuccess ? (
+            <div className="text-center py-6 animate-in fade-in zoom-in-95">
+              <div className="flex justify-center mb-4 text-emerald-500">
+                <CheckCircle2 size={48} />
+              </div>
+              <p className="text-slate-800 dark:text-slate-200 font-bold mb-2">Password Berhasil Diubah!</p>
+              <p className="text-sm text-slate-500">Mengalihkan ke halaman login...</p>
+            </div>
+          ) : (
+            <form onSubmit={handleUpdatePassword} className="space-y-4 animate-in fade-in zoom-in-95">
+              
+              {errorMsg && (
+                <div className="bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 text-sm p-3 rounded-lg text-center border border-red-100 dark:border-red-800">
+                  {errorMsg}
+                </div>
+              )}
+
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-slate-500 uppercase">Password Baru</label>
+                <Input 
+                  type="password" 
+                  placeholder="Minimal 6 karakter" 
+                  value={password} 
+                  onChange={(e) => setPassword(e.target.value)} 
+                  required 
+                  minLength={6}
+                  className="bg-sky-50/50 dark:bg-slate-950 border-sky-200 dark:border-slate-800 focus-visible:ring-sky-500"
+                />
+              </div>
+              <Button 
+                type="submit" 
+                className="w-full bg-sky-600 hover:bg-sky-700 text-white font-bold py-6" 
+                disabled={loading}
+              >
+                {loading ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Menyimpan...</> : "Simpan Password Baru"}
+              </Button>
+            </form>
+          )}
+        </CardContent>
+      </Card>
+    </div>
   );
 }
-
-function App() {
-  return (
-    <QueryClientProvider client={queryClient}>
-      <TooltipProvider>
-        <WouterRouter hook={useHashLocation}>
-          <Router />
-        </WouterRouter>
-        <Toaster />
-      </TooltipProvider>
-    </QueryClientProvider>
-  );
-}
-
-export default App;
