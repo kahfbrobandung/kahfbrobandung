@@ -9,44 +9,58 @@ export default function Subscription() {
 
   useEffect(() => {
     async function fetchSub() {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) return;
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session) {
+          setLoading(false);
+          return;
+        }
 
-      // Ambil data langganan dari database
-      const { data } = await supabase
-        .from("subscriptions")
-        .select("*")
-        .eq("user_id", session.user.id)
-        .single();
+        // Menggunakan .maybeSingle() agar tidak error jika data belum ada
+        const { data, error } = await supabase
+          .from("subscriptions")
+          .select("*")
+          .eq("user_id", session.user.id)
+          .maybeSingle();
 
-      setSubData(data);
-      setLoading(false);
+        if (error) {
+          console.error("Error fetching subscription:", error);
+        } else {
+          setSubData(data);
+        }
+      } catch (err) {
+        console.error("Gagal memuat data:", err);
+      } finally {
+        // APAPUN YANG TERJADI, LOADING HARUS BERHENTI
+        setLoading(false);
+      }
     }
     fetchSub();
   }, []);
 
   if (loading) {
-    return <div className="min-h-screen flex items-center justify-center font-medium">Memuat data langganan...</div>;
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center font-medium text-slate-500">
+        <Clock className="animate-spin mb-4" size={32} />
+        Memuat data langganan...
+      </div>
+    );
   }
 
-  // Default jika data belum ada
+  // Default jika data belum ada (User baru / belum beli)
   const plan = subData || { plan_name: "Basic", status: "trial", current_period_ends_at: null };
   
-  // Format tanggal
   const endDate = plan.current_period_ends_at 
     ? new Date(plan.current_period_ends_at).toLocaleDateString("id-ID", { day: "2-digit", month: "long", year: "numeric" })
     : "-";
 
-  // LINK PRODUK LYNK.ID KAMU
   const LYNK_ID_URL = "https://lynk.id/erlanggasama/z5zor11421lw";
 
-  // Cek apakah user ini Owner (Pemilik aplikasi)
-  const isOwner = plan.plan_name === "Owner";
+  // Cek apakah user ini Owner
+  const isOwner = plan.plan_name === "Owner" || plan.plan_name === "owner";
 
   return (
     <div className="min-h-[100dvh] w-full bg-slate-50 dark:bg-slate-950 flex flex-col items-center pb-12">
-      
-      {/* HEADER DENGAN GRADASI LEBIH PEKAT */}
       <header className="w-full max-w-md bg-gradient-to-br from-blue-600 to-indigo-800 text-white pt-10 pb-8 px-6 shadow-xl rounded-b-[2rem] mb-6 sticky top-0 z-20 relative overflow-hidden">
         <div className="absolute top-0 right-0 -mt-4 -mr-4 w-24 h-24 bg-white opacity-10 rounded-full blur-2xl"></div>
         
@@ -62,11 +76,9 @@ export default function Subscription() {
       </header>
 
       <main className="w-full max-w-md px-4 flex flex-col gap-6">
-        {/* KARTU LANGGANAN DENGAN EFEK PREMIUM */}
         <div className="bg-white dark:bg-slate-900 border border-blue-100 dark:border-slate-800 shadow-xl shadow-blue-100/50 dark:shadow-none rounded-3xl p-8 text-center relative overflow-hidden">
           
           <div className="flex justify-center mb-5 relative">
-            {/* Efek glow di belakang ikon */}
             <div className={`absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-16 h-16 rounded-full blur-xl ${isOwner ? 'bg-amber-200' : 'bg-blue-200'}`}></div>
             
             {isOwner ? (
@@ -104,7 +116,6 @@ export default function Subscription() {
             </p>
           </div>
 
-          {/* TOMBOL DENGAN GRADASI MENONJOL */}
           <div className="space-y-3">
             <a 
               href={LYNK_ID_URL}
