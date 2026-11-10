@@ -28,7 +28,6 @@ import { BarcodeScanner } from "@/components/BarcodeScanner";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { ArrowLeft, Boxes, Camera, ClipboardCheck, PackagePlus, Plus, Trash2, ShoppingCart, CheckCircle2, Search, WifiOff, RefreshCw } from "lucide-react";
 
-// KUNCI UNTUK LOCAL STORAGE
 const OFFLINE_QUEUE_KEY = "erlangga_offline_queue";
 
 const visitCartItemSchema = z.object({
@@ -75,12 +74,10 @@ export default function Operations() {
   const [activeTab, setActiveTab] = useState<"visit" | "restock">("visit");
   const [scannerTarget, setScannerTarget] = useState<"visit" | "restock" | null>(null);
   
-  // STATE KONEKSI & SINKRONISASI
   const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
   const [isSyncing, setIsSyncing] = useState(false);
   const [pendingSyncCount, setPendingSyncCount] = useState(0);
 
-  // STATE SEARCHABLE DROPDOWN
   const [visitProductSelection, setVisitProductSelection] = useState("");
   const [visitSearchQuery, setVisitSearchQuery] = useState("");
   const [isVisitDropdownOpen, setIsVisitDropdownOpen] = useState(false);
@@ -177,7 +174,7 @@ export default function Operations() {
     queryClient.invalidateQueries({ queryKey: getGetSalesActivityQueryKey() });
   };
 
-  // --- LOGIKA OFFLINE MODE ---
+  // --- LOGIKA OFFLINE MODE (FIX URL ENDPOINT) ---
   const updatePendingCount = () => {
     try {
       const queue: OfflineAction[] = JSON.parse(localStorage.getItem(OFFLINE_QUEUE_KEY) || "[]");
@@ -199,12 +196,14 @@ export default function Operations() {
     for (const action of queue) {
       try {
         if (action.type === 'visit') {
-          const res = await fetch("/api/stock/visits", {
+          // FIX: URL disesuaikan dengan backend (/api/stock-visits)
+          const res = await fetch("/api/stock-visits", {
             method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(action.data)
           });
           if (!res.ok) throw new Error("Gagal sync visit");
         } else if (action.type === 'restock') {
-          const res = await fetch("/api/stock/restocks", {
+          // FIX: URL disesuaikan dengan backend (/api/stock-restocks)
+          const res = await fetch("/api/stock-restocks", {
             method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(action.data)
           });
           if (!res.ok) throw new Error("Gagal sync restock");
@@ -252,7 +251,6 @@ export default function Operations() {
       toast({ title: "Gagal menyimpan offline", description: "Memori HP mungkin penuh.", variant: "destructive" });
     }
   };
-  // ---------------------------
 
   const handleSelectVisitProduct = (product: { barcode: string; name: string }) => {
     setVisitProductSelection(product.barcode);
@@ -435,7 +433,6 @@ export default function Operations() {
     <main className="min-h-[100dvh] bg-sky-50/50 dark:bg-slate-950 px-4 py-6 text-slate-800 dark:text-slate-100 sm:px-6">
       <div className="mx-auto max-w-5xl">
         
-        {/* BANNER OFFLINE / SYNCING */}
         {(!isOnline || pendingSyncCount > 0) && (
           <div className={`mb-4 rounded-xl p-3 flex items-center justify-between text-sm font-bold shadow-sm border ${!isOnline ? 'bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800 text-red-700 dark:text-red-400' : 'bg-sky-100 dark:bg-sky-900/30 border-sky-200 dark:border-sky-800 text-sky-800 dark:text-sky-300'}`}>
             <div className="flex items-center gap-2">
@@ -484,7 +481,6 @@ export default function Operations() {
           <div className="grid gap-6 lg:grid-cols-[1fr_0.9fr]">
             <section className="flex flex-col gap-6">
               
-              {/* FORM INPUT SCAN */}
               <div className="rounded-2xl border border-sky-100 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-sm">
                 <h2 className="font-serif text-xl font-bold text-slate-800 dark:text-slate-100 mb-4">Scan & Hitung</h2>
                 <Form {...visitCartForm}>
@@ -565,7 +561,6 @@ export default function Operations() {
                 </Form>
               </div>
 
-              {/* KERANJANG */}
               <div className="rounded-2xl border border-sky-100 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-sm">
                 <div className="mb-4 flex items-center justify-between border-b border-sky-50 dark:border-slate-800 pb-3">
                   <h3 className="flex items-center gap-2 text-lg font-bold text-slate-800 dark:text-slate-100">
@@ -602,7 +597,6 @@ export default function Operations() {
                 )}
               </div>
 
-              {/* SIMPAN KUNJUNGAN */}
               <div className="rounded-2xl border border-sky-100 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-sm">
                 <Form {...visitForm}>
                   <form onSubmit={onSaveVisit}>
@@ -619,17 +613,23 @@ export default function Operations() {
                     {visitForm.formState.errors.root?.message && (
                       <p className="mb-3 text-sm font-bold text-red-500">{visitForm.formState.errors.root.message}</p>
                     )}
-                    <button type="submit" disabled={createVisit.isPending || cart.length === 0} className="group inline-flex h-14 w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-sky-600 to-blue-700 px-4 text-base font-bold text-white shadow-lg shadow-sky-600/30 transition-all hover:from-sky-700 hover:to-blue-800 disabled:opacity-50 disabled:shadow-none active:scale-[0.98]">
+                    
+                    {/* TOMBOL SIMPAN DENGAN BLOKIRAN KERANJANG KOSONG */}
+                    <button 
+                      type="submit" 
+                      disabled={createVisit.isPending || cart.length === 0} 
+                      className="group inline-flex h-14 w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-sky-600 to-blue-700 px-4 text-base font-bold text-white shadow-lg shadow-sky-600/30 transition-all hover:from-sky-700 hover:to-blue-800 disabled:opacity-50 disabled:shadow-none active:scale-[0.98]"
+                    >
                       <CheckCircle2 className="h-6 w-6 transition-transform group-hover:scale-110" />
                       {createVisit.isPending ? "Mengunci..." : isOnline ? "Kunci & Simpan Kunjungan" : "Simpan (Offline)"}
                     </button>
+                    
                   </form>
                 </Form>
               </div>
 
             </section>
 
-            {/* RIWAYAT KUNJUNGAN */}
             <section className="rounded-2xl border border-sky-100 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-sm h-fit">
               <h2 className="font-serif text-xl font-bold text-slate-800 dark:text-slate-100 border-b border-sky-50 dark:border-slate-800 pb-3 mb-4">Riwayat Kunjungan</h2>
               <p className="mb-4 text-xs font-medium text-sky-600 dark:text-sky-400">{activeStore ? `Toko: ${activeStore}` : "Pilih toko terlebih dahulu."}</p>
@@ -667,7 +667,6 @@ export default function Operations() {
             </section>
           </div>
         ) : (
-          // TAB BARANG MASUK
           <div className="grid gap-6 lg:grid-cols-[0.9fr_1fr]">
              <section className="rounded-2xl border border-sky-100 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-sm h-fit">
               <h2 className="font-serif text-xl font-bold text-slate-800 dark:text-slate-100 mb-4 border-b border-sky-50 dark:border-slate-800 pb-3">Catat Barang Masuk</h2>
