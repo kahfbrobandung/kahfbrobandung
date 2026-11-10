@@ -20,7 +20,7 @@ import {
   stockVisitsTable,
   storesTable,
 } from "@workspace/db";
-import { reconcileStockLedger } from "../lib/stock-ledger";
+// import { reconcileStockLedger } from "../lib/stock-ledger"; // <-- DIMATIKAN SEMENTARA
 import { displayStoreName, iso, normalizeStoreName } from "./helpers";
 
 const router: IRouter = Router();
@@ -267,9 +267,12 @@ router.post("/stock-visits", async (req, res) => {
       target: [stockEntriesTable.sourceType, stockEntriesTable.sourceId],
     });
     
-    for (const barcode of new Set(lines.map((line) => line.barcode))) {
-      await reconcileStockLedger(tx, store.name, barcode);
-    }
+    // --- FUNGSI BERAT DIMATIKAN SEMENTARA ---
+    // for (const barcode of new Set(lines.map((line) => line.barcode))) {
+    //   await reconcileStockLedger(tx, store.name, barcode);
+    // }
+    // ----------------------------------------
+    
     return created.id;
   });
 
@@ -329,9 +332,12 @@ router.delete("/stock-visits/:id", async (req, res): Promise<void> => {
     }
     await tx.delete(stockVisitsTable).where(eq(stockVisitsTable.id, visit.id));
     
-    for (const barcode of new Set(lines.map((line) => line.barcode))) {
-      await reconcileStockLedger(tx, visit.store, barcode);
-    }
+    // --- FUNGSI BERAT DIMATIKAN SEMENTARA ---
+    // for (const barcode of new Set(lines.map((line) => line.barcode))) {
+    //   await reconcileStockLedger(tx, visit.store, barcode);
+    // }
+    // ----------------------------------------
+    
     return visit.id;
   });
   if (!deleted) {
@@ -463,7 +469,11 @@ router.post("/stock-restocks", async (req, res) => {
       .onConflictDoNothing({
         target: [stockEntriesTable.sourceType, stockEntriesTable.sourceId],
       });
-    await reconcileStockLedger(tx, store.name, restock.barcode);
+      
+    // --- FUNGSI BERAT DIMATIKAN SEMENTARA ---
+    // await reconcileStockLedger(tx, store.name, restock.barcode);
+    // ----------------------------------------
+    
     return restock;
   });
   if (!row) {
@@ -555,7 +565,11 @@ router.patch("/stock-restocks/:id/invoice", async (req, res): Promise<void> => {
           syncError: null,
         },
       });
-    await reconcileStockLedger(tx, store.name, updated.barcode);
+      
+    // --- FUNGSI BERAT DIMATIKAN SEMENTARA ---
+    // await reconcileStockLedger(tx, store.name, updated.barcode);
+    // ----------------------------------------
+    
     return { updated, store };
   });
   if (!result) {
@@ -617,7 +631,11 @@ router.delete("/stock-restocks/:id/invoice", async (req, res): Promise<void> => 
       .from(storesTable)
       .where(eq(storesTable.id, restock.storeId))
       .limit(1);
-    if (store) await reconcileStockLedger(tx, store.name, restock.barcode);
+      
+    // --- FUNGSI BERAT DIMATIKAN SEMENTARA ---
+    // if (store) await reconcileStockLedger(tx, store.name, restock.barcode);
+    // ----------------------------------------
+    
     return restock.id;
   });
   if (!updated) {
@@ -666,7 +684,11 @@ router.delete("/stock-restocks/:id", async (req, res): Promise<void> => {
       .from(storesTable)
       .where(eq(storesTable.id, restock.storeId))
       .limit(1);
-    if (store) await reconcileStockLedger(tx, store.name, restock.barcode);
+      
+    // --- FUNGSI BERAT DIMATIKAN SEMENTARA ---
+    // if (store) await reconcileStockLedger(tx, store.name, restock.barcode);
+    // ----------------------------------------
+    
     return restock.id;
   });
   if (!deleted) {
