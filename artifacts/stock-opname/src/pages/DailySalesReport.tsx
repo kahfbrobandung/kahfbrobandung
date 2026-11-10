@@ -237,4 +237,4 @@ export default function DailySalesReport() {
       </main>
     </div>
   );
-}
+} 
