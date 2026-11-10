@@ -224,9 +224,7 @@ export default function Home() {
         description: `${successCount} tersimpan, ${failedCount} gagal. Silakan cek jaringan Anda.`, 
         variant: 'destructive' 
       });
-      // Hapus yang sudah sukses dari keranjang, sisakan yang gagal agar bisa di-submit ulang
-      // (Untuk simplifikasi, kita biarkan cart tetap utuh agar user bisa coba lagi, atau kita bersihkan total)
-      setCart([]); // Kita bersihkan untuk mencegah double input, user bisa cek riwayat
+      setCart([]); 
     }
     
     queryClient.invalidateQueries({ queryKey: getListStockBalancesQueryKey() });
@@ -260,7 +258,9 @@ export default function Home() {
         <div className="flex gap-2">
           <Link href="/operasional" className="flex-1 bg-white/10 hover:bg-white/20 transition-colors rounded-xl py-2 text-center text-[10px] sm:text-xs font-semibold shadow-sm">Kunjungan SO</Link>
           <Link href="/dashboard" className="flex-1 bg-white/10 hover:bg-white/20 transition-colors rounded-xl py-2 text-center text-[10px] sm:text-xs font-semibold shadow-sm">Laporan</Link>
-          <Link href="/subscription" className="flex-1 bg-white/10 hover:bg-white/20 transition-colors rounded-xl py-2 text-center text-[10px] sm:text-xs font-semibold shadow-sm">Langganan</Link>
+          
+          {/* TOMBOL LANGGANAN DIPERBARUI JADI EMAS */}
+          <Link href="/subscription" className="flex-1 bg-gradient-to-r from-amber-300 to-yellow-400 hover:from-amber-400 hover:to-yellow-500 text-blue-900 rounded-xl py-2 text-center text-[10px] sm:text-xs font-bold shadow-md shadow-amber-500/30">Langganan 👑</Link>
         </div>
       </header>
 
