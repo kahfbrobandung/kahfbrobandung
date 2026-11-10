@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { supabase } from "@/supabase";
 import { Link } from "wouter";
-import { ArrowLeft, CheckCircle2, ShieldAlert, Clock } from "lucide-react";
+import { ArrowLeft, CheckCircle2, ShieldAlert, Clock, ExternalLink } from "lucide-react";
 
 export default function Subscription() {
   const [loading, setLoading] = useState(true);
@@ -31,12 +31,14 @@ export default function Subscription() {
 
   // Default jika data belum ada
   const plan = subData || { plan_name: "Basic", status: "trial", current_period_ends_at: null };
-  const isActive = plan.status === "active" || plan.status === "trial";
   
   // Format tanggal
   const endDate = plan.current_period_ends_at 
     ? new Date(plan.current_period_ends_at).toLocaleDateString("id-ID", { day: "2-digit", month: "long", year: "numeric" })
     : "-";
+
+  // LINK PRODUK LYNK.ID KAMU
+  const LYNK_ID_URL = "https://lynk.id/erlanggasama/z5zor11421lw";
 
   return (
     <div className="min-h-[100dvh] w-full bg-slate-50 dark:bg-slate-950 flex flex-col items-center pb-12">
@@ -85,11 +87,24 @@ export default function Subscription() {
             </p>
           </div>
 
-          {plan.status !== "active" && (
-            <button className="w-full py-3.5 bg-sky-600 hover:bg-sky-700 text-white font-bold rounded-xl transition-colors">
-              Perpanjang Langganan
-            </button>
-          )}
+          {/* TOMBOL PEMBAYARAN VIA LYNK.ID */}
+          <div className="space-y-3">
+            <a 
+              href={LYNK_ID_URL}
+              target="_blank" 
+              rel="noopener noreferrer"
+              className="flex items-center justify-center gap-2 w-full py-3.5 bg-sky-600 hover:bg-sky-700 text-white font-bold rounded-xl transition-colors shadow-md"
+            >
+              {plan.status === "active" ? "Perpanjang Langganan" : "Bayar Langganan Sekarang"}
+              <ExternalLink size={16} />
+            </a>
+            
+            <p className="text-[11px] text-slate-400">
+              Pembayaran aman & otomatis melalui <strong>Lynk.id</strong>. 
+              Akses akan terbuka otomatis setelah pembayaran berhasil.
+            </p>
+          </div>
+
         </div>
       </main>
     </div>
