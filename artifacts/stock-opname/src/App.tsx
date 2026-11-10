@@ -8,7 +8,7 @@ import OperationsPage from '@/pages/Operations';
 import DailySalesReport from '@/pages/DailySalesReport';
 import LoginPage from '@/pages/Login';
 import OnboardingPage from '@/pages/Onboarding';
-import { supabase } from './supabase';
+import { supabase } from './supabase'; // Sudah benar (tanpa lib/)
 import { Route, Switch, Router as WouterRouter, useLocation } from 'wouter';
 import { useHashLocation } from 'wouter/use-hash-location';
 import { setAuthTokenGetter, setBaseUrl, useListStores } from '@workspace/api-client-react';
@@ -74,13 +74,13 @@ function Router() {
     );
   }
 
-  // PERBAIKAN: Tampilkan loading saat mengecek toko agar tidak "berkedip"
+  // Tampilkan loading saat mengecek toko agar tidak "berkedip"
   if (storesQuery.isLoading) {
     return <div className="min-h-screen flex items-center justify-center font-medium text-slate-500">Mengecek data toko...</div>;
   }
 
-  // Jika sudah login tapi belum punya toko, paksa ke Onboarding
-  if (storesQuery.isSuccess && storesQuery.data.length === 0) {
+  // PERBAIKAN BUG: Gunakan optional chaining (?.) agar tidak crash jika data undefined
+  if (storesQuery.isSuccess && storesQuery.data?.length === 0) {
     return (
       <Switch>
         <Route path="/onboarding" component={OnboardingPage} />
