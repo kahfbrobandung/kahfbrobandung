@@ -24,11 +24,18 @@ import {
 import { useProducts } from "@/hooks/useProducts";
 import { useStoreName } from "@/hooks/useStoreName";
 import { useToast } from "@/hooks/use-toast";
+import { supabase } from "@/supabase";
 import { BarcodeScanner } from "@/components/BarcodeScanner";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { ArrowLeft, Boxes, Camera, ClipboardCheck, PackagePlus, Plus, Trash2, ShoppingCart, CheckCircle2, Search, WifiOff, RefreshCw } from "lucide-react";
 
 const OFFLINE_QUEUE_KEY = "erlangga_offline_queue";
+
+// FIX #1: base URL backend. Set VITE_API_URL di Vercel env vars.
+// Fallback ke URL backend produksi agar sync tetap jalan meski env var lupa di-set.
+const API_BASE_URL =
+  ((import.meta as any).env?.VITE_API_URL as string | undefined)?.replace(/\/+$/, "") ||
+  "https://kahfbrobandung-7qyj.vercel.app";
 
 const visitCartItemSchema = z.object({
   barcode: z.string().trim().min(1, "Barcode wajib diisi."),
@@ -53,7 +60,7 @@ type VisitFormValues = z.infer<typeof visitFormSchema>;
 type RestockFormValues = z.infer<typeof restockFormSchema>;
 
 type CartItem = { barcode: string; product: string; quantity: number };
-type OfflineAction = { id: string; type: 'visit' | 'restock'; data: any };
+type OfflineAction = { id: string; type: "visit" | "restock"; data: any };
 
 function localDateTime() {
   const now = new Date();
@@ -73,10 +80,13 @@ export default function Operations() {
   const activeStore = storeName.trim();
   const [activeTab, setActiveTab] = useState<"visit" | "restock">("visit");
   const [scannerTarget, setScannerTarget] = useState<"visit" | "restock" | null>(null);
-  
-  const [isOnline, setIsOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
+
+  const [isOnline, setIsOnline] = useState(typeof navigator !== "undefined" ? navigator.onLine : true);
   const [isSyncing, setIsSyncing] = useState(false);
   const [pendingSyncCount, setPendingSyncCount] = useState(0);
+
+  // FIX #3: pakai ref agar processQueue tidak race-condition
+  const isSyncingRef = useRef(false);
 
   const [visitProductSelection, setVisitProductSelection] = useState("");
   const [visitSearchQuery, setVisitSearchQuery] = useState("");
@@ -86,9 +96,9 @@ export default function Operations() {
   const [restockProductSelection, setRestockProductSelection] = useState("");
   const [restockSearchQuery, setRestockSearchQuery] = useState("");
   const [isRestockDropdownOpen, setIsRestockDropdownOpen] = useState(false);
-  
+
   const [cart, setCart] = useState<CartItem[]>([]);
-  const [customProducts, setCustomProducts] = useState<{barcode: string, name: string}[]>([]);
+  const [customProducts, setCustomProducts] = useState<{ barcode: string; name: string }[]>([]);
 
   const [restockSearch, setRestockSearch] = useState("");
   const [visitDisplayLimit, setVisitDisplayLimit] = useState(5);
@@ -100,12 +110,12 @@ export default function Operations() {
   const restockClientId = useRef<string | null>(null);
 
   const storesQuery = useListStores({ query: { queryKey: getListStoresQueryKey(), staleTime: 5 * 60 * 1000 } });
-  
-  const visitParams = { store: activeStore || undefined, limit: 50 }; 
+
+  const visitParams = { store: activeStore || undefined, limit: 50 };
   const visitHistoryQuery = useListStockVisits(visitParams, {
     query: { queryKey: getListStockVisitsQueryKey(visitParams), enabled: true, staleTime: 0, refetchOnMount: "always" },
   });
-  
+
   const restockParams = { store: activeStore || undefined, limit: 500 };
   const restockHistoryQuery = useListStockRestocks(restockParams, {
     query: { queryKey: getListStockRestocksQueryKey(restockParams), enabled: true, staleTime: 0, refetchOnMount: "always" },
@@ -129,27 +139,29 @@ export default function Operations() {
   const filteredVisitProducts = useMemo(() => {
     if (!visitSearchQuery) return allProductOptions.slice(0, 10);
     const q = visitSearchQuery.toLowerCase();
-    return allProductOptions.filter(p => p.name.toLowerCase().includes(q) || p.barcode.includes(q)).slice(0, 15);
+    return allProductOptions.filter((p) => p.name.toLowerCase().includes(q) || p.barcode.includes(q)).slice(0, 15);
   }, [allProductOptions, visitSearchQuery]);
 
   const filteredRestockProducts = useMemo(() => {
     if (!restockSearchQuery) return allProductOptions.slice(0, 10);
     const q = restockSearchQuery.toLowerCase();
-    return allProductOptions.filter(p => p.name.toLowerCase().includes(q) || p.barcode.includes(q)).slice(0, 15);
+    return allProductOptions.filter((p) => p.name.toLowerCase().includes(q) || p.barcode.includes(q)).slice(0, 15);
   }, [allProductOptions, restockSearchQuery]);
 
   const visibleRestocks = useMemo(() => {
     const query = restockSearch.trim().toLocaleLowerCase("id-ID");
     const rows = restockHistoryQuery.data ?? [];
     if (!query) return rows;
-    return rows.filter((entry) => [entry.product, entry.barcode, entry.store].some((value) => value.toLocaleLowerCase("id-ID").includes(query)));
+    return rows.filter((entry) =>
+      [entry.product, entry.barcode, entry.store].some((value) => value.toLocaleLowerCase("id-ID").includes(query)),
+    );
   }, [restockHistoryQuery.data, restockSearch]);
 
   const visitCartForm = useForm<VisitCartItemValues>({
     resolver: zodResolver(visitCartItemSchema),
     defaultValues: { barcode: "", product: "", quantity: "" },
   });
-  
+
   const visitForm = useForm<VisitFormValues>({
     resolver: zodResolver(visitFormSchema),
     defaultValues: { visitedAt: localDateTime() },
@@ -174,80 +186,119 @@ export default function Operations() {
     queryClient.invalidateQueries({ queryKey: getGetSalesActivityQueryKey() });
   };
 
-  // --- LOGIKA OFFLINE MODE (FIX URL ENDPOINT) ---
+  // --- LOGIKA OFFLINE MODE (FIX TOTAL) ---
   const updatePendingCount = () => {
     try {
       const queue: OfflineAction[] = JSON.parse(localStorage.getItem(OFFLINE_QUEUE_KEY) || "[]");
       setPendingSyncCount(queue.length);
-    } catch { setPendingSyncCount(0); }
+    } catch {
+      setPendingSyncCount(0);
+    }
   };
 
   const processQueue = async () => {
-    if (!navigator.onLine || isSyncing) return;
+    // Guard race condition
+    if (!navigator.onLine || isSyncingRef.current) return;
+
     let queue: OfflineAction[] = [];
-    try { queue = JSON.parse(localStorage.getItem(OFFLINE_QUEUE_KEY) || "[]"); } catch { return; }
+    try {
+      queue = JSON.parse(localStorage.getItem(OFFLINE_QUEUE_KEY) || "[]");
+    } catch {
+      return;
+    }
     if (queue.length === 0) return;
 
-    setIsSyncing(true);
-    toast({ title: "Menyinkronkan data offline...", description: `Mengirim ${queue.length} data ke server.` });
-
-    const remainingQueue: OfflineAction[] = [];
-
-    for (const action of queue) {
-      try {
-        if (action.type === 'visit') {
-          // FIX: URL disesuaikan dengan backend (/api/stock-visits)
-          const res = await fetch("/api/stock-visits", {
-            method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(action.data)
-          });
-          if (!res.ok) throw new Error("Gagal sync visit");
-        } else if (action.type === 'restock') {
-          // FIX: URL disesuaikan dengan backend (/api/stock-restocks)
-          const res = await fetch("/api/stock-restocks", {
-            method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(action.data)
-          });
-          if (!res.ok) throw new Error("Gagal sync restock");
-        }
-      } catch (err) {
-        remainingQueue.push(action);
-      }
+    // FIX #4: hanya sync jika ada user login
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.access_token) {
+      // Belum login - tahan queue sampai user login
+      return;
     }
 
-    localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(remainingQueue));
-    updatePendingCount();
-    setIsSyncing(false);
-    
-    if (remainingQueue.length === 0) {
-      toast({ title: "Sinkronisasi Selesai!", description: "Semua data offline berhasil dikirim." });
-      refreshAffectedData();
-    } else {
-      toast({ title: "Sebagian data gagal dikirim", description: "Akan dicoba lagi saat online.", variant: "destructive" });
+    isSyncingRef.current = true;
+    setIsSyncing(true);
+
+    try {
+      toast({
+        title: "Menyinkronkan data offline...",
+        description: `Mengirim ${queue.length} data ke server.`,
+      });
+
+      const remainingQueue: OfflineAction[] = [];
+      const authHeader = `Bearer ${session.access_token}`;
+
+      for (const action of queue) {
+        try {
+          // FIX #1 + #2: pakai base URL backend + Authorization header
+          const endpoint = action.type === "visit" ? "/api/stock-visits" : "/api/stock-restocks";
+          const res = await fetch(`${API_BASE_URL}${endpoint}`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: authHeader,
+            },
+            body: JSON.stringify(action.data),
+          });
+
+          if (!res.ok) {
+            // FIX #5: log body error untuk diagnosa
+            const errorText = await res.text().catch(() => "");
+            console.error(`Sync ${action.type} gagal (${res.status}):`, errorText);
+            throw new Error(`HTTP ${res.status}`);
+          }
+        } catch (err) {
+          console.error(`Sync ${action.type} error:`, err);
+          remainingQueue.push(action);
+        }
+      }
+
+      localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(remainingQueue));
+      updatePendingCount();
+
+      if (remainingQueue.length === 0) {
+        toast({ title: "Sinkronisasi Selesai!", description: "Semua data offline berhasil dikirim." });
+        refreshAffectedData();
+      } else {
+        // FIX #6: sebutkan sisa
+        toast({
+          title: "Sebagian data gagal dikirim",
+          description: `${remainingQueue.length} data tersisa. Akan dicoba lagi saat online.`,
+          variant: "destructive",
+        });
+      }
+    } finally {
+      isSyncingRef.current = false;
+      setIsSyncing(false);
     }
   };
 
   useEffect(() => {
     updatePendingCount();
-    const handleOnline = () => { setIsOnline(true); processQueue(); };
+    const handleOnline = () => {
+      setIsOnline(true);
+      processQueue();
+    };
     const handleOffline = () => setIsOnline(false);
-    
+
     window.addEventListener("online", handleOnline);
     window.addEventListener("offline", handleOffline);
-    
+
     if (navigator.onLine) processQueue();
 
     return () => {
       window.removeEventListener("online", handleOnline);
       window.removeEventListener("offline", handleOffline);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const saveToOfflineQueue = (type: 'visit' | 'restock', data: any) => {
+  const saveToOfflineQueue = (type: "visit" | "restock", data: any) => {
     try {
       const queue: OfflineAction[] = JSON.parse(localStorage.getItem(OFFLINE_QUEUE_KEY) || "[]");
       queue.push({ id: crypto.randomUUID(), type, data });
       localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(queue));
       updatePendingCount();
-    } catch (e) {
+    } catch {
       toast({ title: "Gagal menyimpan offline", description: "Memori HP mungkin penuh.", variant: "destructive" });
     }
   };
@@ -307,16 +358,18 @@ export default function Operations() {
       const existingIndex = prev.findIndex((item) => item.barcode === barcode);
       if (existingIndex >= 0) {
         const newCart = [...prev];
-        newCart[existingIndex] = { ...newCart[existingIndex], quantity: newCart[existingIndex].quantity + qty };
+        newCart[existingIndex] = {
+          ...newCart[existingIndex],
+          quantity: newCart[existingIndex].quantity + qty,
+        };
         return newCart;
-      } else {
-        return [...prev, { barcode, product: productName, quantity: qty }];
       }
+      return [...prev, { barcode, product: productName, quantity: qty }];
     });
 
     visitCartForm.reset({ barcode: "", product: "", quantity: "" });
     setVisitProductSelection("");
-    setVisitSearchQuery(""); 
+    setVisitSearchQuery("");
     toast({ title: "Masuk Keranjang", description: `+${qty} unit ${productName}` });
   });
 
@@ -339,15 +392,15 @@ export default function Operations() {
     }));
 
     visitClientId.current ??= crypto.randomUUID();
-    const payload = { 
-      clientId: visitClientId.current, 
-      store: activeStore, 
-      visitedAt: new Date(values.visitedAt).toISOString(), 
-      lines 
+    const payload = {
+      clientId: visitClientId.current,
+      store: activeStore,
+      visitedAt: new Date(values.visitedAt).toISOString(),
+      lines,
     };
 
     if (!isOnline) {
-      saveToOfflineQueue('visit', payload);
+      saveToOfflineQueue("visit", payload);
       visitClientId.current = null;
       setCart([]);
       visitForm.reset({ visitedAt: localDateTime() });
@@ -366,7 +419,7 @@ export default function Operations() {
           toast({ title: "Stok Dikunci!", description: `${visit.lines?.length ?? lines.length} SKU tersimpan.` });
         },
         onError: (error) => toast({ title: "Gagal menyimpan", description: error.message, variant: "destructive" }),
-      }
+      },
     );
   });
 
@@ -375,20 +428,20 @@ export default function Operations() {
       toast({ title: "Pilih toko dulu", description: "Nama toko wajib diisi.", variant: "destructive" });
       return;
     }
-    
+
     restockClientId.current ??= crypto.randomUUID();
-    const payload = { 
-      clientId: restockClientId.current, 
-      store: activeStore, 
-      product: values.product.trim(), 
-      barcode: values.barcode.trim(), 
-      quantity: Number(values.quantity), 
-      receivedAt: new Date(values.receivedAt).toISOString(), 
-      ...(values.note.trim() ? { note: values.note.trim() } : {}) 
+    const payload = {
+      clientId: restockClientId.current,
+      store: activeStore,
+      product: values.product.trim(),
+      barcode: values.barcode.trim(),
+      quantity: Number(values.quantity),
+      receivedAt: new Date(values.receivedAt).toISOString(),
+      ...(values.note.trim() ? { note: values.note.trim() } : {}),
     };
 
     if (!isOnline) {
-      saveToOfflineQueue('restock', payload);
+      saveToOfflineQueue("restock", payload);
       restockClientId.current = null;
       setRestockProductSelection("");
       setRestockSearchQuery("");
@@ -409,51 +462,77 @@ export default function Operations() {
           toast({ title: "Barang masuk tersimpan", description: `+${entry.quantity} unit ${entry.product}` });
         },
         onError: (error) => toast({ title: "Gagal menyimpan", description: error.message, variant: "destructive" }),
-      }
+      },
     );
   });
 
   const onDeleteVisit = (id: number) => {
     if (!window.confirm("Hapus kunjungan stok ini?")) return;
-    deleteVisit.mutate({ id }, {
-      onSuccess: () => { refreshAffectedData(); toast({ title: "Kunjungan dihapus" }); },
-      onError: (error) => toast({ title: "Gagal menghapus", description: error.message, variant: "destructive" }),
-    });
+    deleteVisit.mutate(
+      { id },
+      {
+        onSuccess: () => {
+          refreshAffectedData();
+          toast({ title: "Kunjungan dihapus" });
+        },
+        onError: (error) => toast({ title: "Gagal menghapus", description: error.message, variant: "destructive" }),
+      },
+    );
   };
 
   const onDeleteRestock = (entry: StockRestock) => {
     if (!window.confirm(`Hapus penerimaan ${entry.quantity} unit ${entry.product}?`)) return;
-    deleteRestock.mutate({ id: entry.id }, {
-      onSuccess: () => { refreshAffectedData(); toast({ title: "Barang masuk dihapus" }); },
-      onError: (error) => toast({ title: "Gagal menghapus", description: error.message, variant: "destructive" }),
-    });
+    deleteRestock.mutate(
+      { id: entry.id },
+      {
+        onSuccess: () => {
+          refreshAffectedData();
+          toast({ title: "Barang masuk dihapus" });
+        },
+        onError: (error) => toast({ title: "Gagal menghapus", description: error.message, variant: "destructive" }),
+      },
+    );
   };
 
   return (
     <main className="min-h-[100dvh] bg-sky-50/50 dark:bg-slate-950 px-4 py-6 text-slate-800 dark:text-slate-100 sm:px-6">
       <div className="mx-auto max-w-5xl">
-        
         {(!isOnline || pendingSyncCount > 0) && (
-          <div className={`mb-4 rounded-xl p-3 flex items-center justify-between text-sm font-bold shadow-sm border ${!isOnline ? 'bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800 text-red-700 dark:text-red-400' : 'bg-sky-100 dark:bg-sky-900/30 border-sky-200 dark:border-sky-800 text-sky-800 dark:text-sky-300'}`}>
+          <div
+            className={`mb-4 rounded-xl p-3 flex items-center justify-between text-sm font-bold shadow-sm border ${
+              !isOnline
+                ? "bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800 text-red-700 dark:text-red-400"
+                : "bg-sky-100 dark:bg-sky-900/30 border-sky-200 dark:border-sky-800 text-sky-800 dark:text-sky-300"
+            }`}
+          >
             <div className="flex items-center gap-2">
-              {!isOnline ? <WifiOff className="h-5 w-5" /> : <RefreshCw className={`h-5 w-5 ${isSyncing ? 'animate-spin' : ''}`} />}
+              {!isOnline ? <WifiOff className="h-5 w-5" /> : <RefreshCw className={`h-5 w-5 ${isSyncing ? "animate-spin" : ""}`} />}
               {!isOnline ? "Anda Offline. Data disimpan di HP." : isSyncing ? "Menyinkronkan data..." : `Ada ${pendingSyncCount} data belum terkirim.`}
             </div>
             {isOnline && pendingSyncCount > 0 && !isSyncing && (
-              <button onClick={processQueue} className="bg-sky-600 text-white px-3 py-1 rounded-lg text-xs hover:bg-sky-700 transition-colors">Kirim Sekarang</button>
+              <button onClick={processQueue} className="bg-sky-600 text-white px-3 py-1 rounded-lg text-xs hover:bg-sky-700 transition-colors">
+                Kirim Sekarang
+              </button>
             )}
           </div>
         )}
 
         <header className="mb-6 flex flex-col gap-4 pb-2 sm:flex-row sm:items-end sm:justify-between">
           <div>
-            <Link href="/" className="mb-3 inline-flex items-center gap-1.5 text-sm font-medium text-sky-600 hover:text-sky-800 dark:text-sky-400 dark:hover:text-sky-300 transition-colors">
+            <Link
+              href="/"
+              className="mb-3 inline-flex items-center gap-1.5 text-sm font-medium text-sky-600 hover:text-sky-800 dark:text-sky-400 dark:hover:text-sky-300 transition-colors"
+            >
               <ArrowLeft className="h-4 w-4" /> Kembali
             </Link>
             <h1 className="font-serif text-3xl font-bold tracking-tight text-slate-800 dark:text-slate-100">Operasional</h1>
           </div>
-          
-          <button type="button" onClick={() => setLocation("/dashboard")} className="inline-flex h-10 items-center justify-center rounded-lg border border-sky-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 text-sm font-semibold text-sky-700 dark:text-sky-400 shadow-sm hover:bg-sky-50 dark:hover:bg-slate-800 transition-colors">
+
+          <button
+            type="button"
+            onClick={() => setLocation("/dashboard")}
+            className="inline-flex h-10 items-center justify-center rounded-lg border border-sky-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 text-sm font-semibold text-sky-700 dark:text-sky-400 shadow-sm hover:bg-sky-50 dark:hover:bg-slate-800 transition-colors"
+          >
             Lihat Penjualan
           </button>
         </header>
@@ -462,17 +541,43 @@ export default function Operations() {
           <label htmlFor="active-store" className="mb-2 flex items-center gap-2 text-sm font-bold text-slate-800 dark:text-slate-100">
             <Boxes className="h-4 w-4 text-sky-600" /> Toko Aktif
           </label>
-          <input id="active-store" list="known-stores" value={storeName} onChange={(event) => setStoreName(event.target.value)} placeholder="Ketik nama toko..." required className="h-12 w-full rounded-xl border border-sky-200 dark:border-slate-800 bg-sky-50 dark:bg-slate-950 px-4 text-base font-medium outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-500/20 text-slate-800 dark:text-slate-100 transition-all" />
+          <input
+            id="active-store"
+            list="known-stores"
+            value={storeName}
+            onChange={(event) => setStoreName(event.target.value)}
+            placeholder="Ketik nama toko..."
+            required
+            className="h-12 w-full rounded-xl border border-sky-200 dark:border-slate-800 bg-sky-50 dark:bg-slate-950 px-4 text-base font-medium outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-500/20 text-slate-800 dark:text-slate-100 transition-all"
+          />
           <datalist id="known-stores">
-            {(storesQuery.data ?? []).map((store) => <option key={store.name} value={store.name} />)}
+            {(storesQuery.data ?? []).map((store) => (
+              <option key={store.name} value={store.name} />
+            ))}
           </datalist>
         </section>
 
         <div className="mb-6 grid grid-cols-2 gap-2 rounded-xl bg-sky-100 dark:bg-slate-800 p-1.5">
-          <button type="button" onClick={() => setActiveTab("visit")} className={`inline-flex h-11 items-center justify-center gap-2 rounded-lg px-3 text-sm font-bold transition-all duration-200 ${activeTab === "visit" ? "bg-white dark:bg-slate-900 text-sky-700 dark:text-sky-400 shadow-sm" : "text-sky-600/70 dark:text-slate-400 hover:text-sky-800 dark:hover:text-slate-200"}`}>
+          <button
+            type="button"
+            onClick={() => setActiveTab("visit")}
+            className={`inline-flex h-11 items-center justify-center gap-2 rounded-lg px-3 text-sm font-bold transition-all duration-200 ${
+              activeTab === "visit"
+                ? "bg-white dark:bg-slate-900 text-sky-700 dark:text-sky-400 shadow-sm"
+                : "text-sky-600/70 dark:text-slate-400 hover:text-sky-800 dark:hover:text-slate-200"
+            }`}
+          >
             <ClipboardCheck className="h-4 w-4" /> Kunjungan SO
           </button>
-          <button type="button" onClick={() => setActiveTab("restock")} className={`inline-flex h-11 items-center justify-center gap-2 rounded-lg px-3 text-sm font-bold transition-all duration-200 ${activeTab === "restock" ? "bg-white dark:bg-slate-900 text-sky-700 dark:text-sky-400 shadow-sm" : "text-sky-600/70 dark:text-slate-400 hover:text-sky-800 dark:hover:text-slate-200"}`}>
+          <button
+            type="button"
+            onClick={() => setActiveTab("restock")}
+            className={`inline-flex h-11 items-center justify-center gap-2 rounded-lg px-3 text-sm font-bold transition-all duration-200 ${
+              activeTab === "restock"
+                ? "bg-white dark:bg-slate-900 text-sky-700 dark:text-sky-400 shadow-sm"
+                : "text-sky-600/70 dark:text-slate-400 hover:text-sky-800 dark:hover:text-slate-200"
+            }`}
+          >
             <PackagePlus className="h-4 w-4" /> Barang Masuk
           </button>
         </div>
@@ -480,12 +585,10 @@ export default function Operations() {
         {activeTab === "visit" ? (
           <div className="grid gap-6 lg:grid-cols-[1fr_0.9fr]">
             <section className="flex flex-col gap-6">
-              
               <div className="rounded-2xl border border-sky-100 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-sm">
                 <h2 className="font-serif text-xl font-bold text-slate-800 dark:text-slate-100 mb-4">Scan & Hitung</h2>
                 <Form {...visitCartForm}>
                   <form onSubmit={onAddToCart} className="space-y-4">
-                    
                     <div className="relative">
                       <label className="mb-2 block text-sm font-bold text-slate-700 dark:text-slate-300">Cari / Scan Produk</label>
                       <div className="flex gap-2">
@@ -509,7 +612,11 @@ export default function Operations() {
                             className="h-12 w-full rounded-xl border border-sky-200 dark:border-slate-800 bg-sky-50 dark:bg-slate-950 pl-9 pr-3 text-sm font-medium focus:border-sky-500 focus:ring-1 focus:ring-sky-500 outline-none text-slate-800 dark:text-slate-100"
                           />
                         </div>
-                        <button type="button" onClick={() => setScannerTarget("visit")} className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-sky-600 text-white shadow-sm hover:bg-sky-700 transition-colors">
+                        <button
+                          type="button"
+                          onClick={() => setScannerTarget("visit")}
+                          className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-sky-600 text-white shadow-sm hover:bg-sky-700 transition-colors"
+                        >
                           <Camera className="h-5 w-5" />
                         </button>
                       </div>
@@ -520,7 +627,11 @@ export default function Operations() {
                             <div className="p-4 text-sm text-center text-slate-500">Produk tidak ditemukan.</div>
                           ) : (
                             filteredVisitProducts.map((p) => (
-                              <div key={p.barcode} onClick={() => handleSelectVisitProduct(p)} className="p-3 text-sm hover:bg-sky-50 dark:hover:bg-slate-800 cursor-pointer border-b border-sky-50 dark:border-slate-800 last:border-0">
+                              <div
+                                key={p.barcode}
+                                onClick={() => handleSelectVisitProduct(p)}
+                                className="p-3 text-sm hover:bg-sky-50 dark:hover:bg-slate-800 cursor-pointer border-b border-sky-50 dark:border-slate-800 last:border-0"
+                              >
                                 <p className="font-bold text-slate-800 dark:text-slate-100">{p.name}</p>
                                 <p className="text-xs text-sky-600 dark:text-sky-400 font-mono mt-0.5">{p.barcode}</p>
                               </div>
@@ -531,30 +642,53 @@ export default function Operations() {
                     </div>
 
                     <div className="grid grid-cols-2 gap-3">
-                      <FormField control={visitCartForm.control} name="product" render={({ field }) => (
-                        <FormItem>
-                          <FormLabel className="text-xs font-semibold text-sky-600 dark:text-sky-400">Nama Terpilih</FormLabel>
-                          <FormControl><input {...field} readOnly placeholder="Auto" className="h-12 w-full rounded-xl border border-sky-200 dark:border-slate-800 bg-sky-100 dark:bg-slate-950 px-3 text-sm font-medium text-slate-700 dark:text-slate-300" /></FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )} />
-                      <FormField control={visitCartForm.control} name="quantity" render={({ field }) => (
-                        <FormItem>
-                          <FormLabel className="text-xs font-bold text-sky-700 dark:text-sky-400">Jumlah Fisik</FormLabel>
-                          <FormControl>
-                            <input 
-                              {...field} 
-                              ref={(e) => { field.ref(e); qtyInputRef.current = e; }}
-                              type="number" inputMode="numeric" placeholder="0" 
-                              className="h-12 w-full rounded-xl border-2 border-sky-300 dark:border-sky-700 bg-sky-50/50 dark:bg-slate-900 px-3 text-center text-xl font-bold text-sky-700 dark:text-sky-300 focus:border-sky-500 focus:ring-2 focus:ring-sky-500/20 transition-all placeholder:text-sky-300" 
-                            />
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )} />
+                      <FormField
+                        control={visitCartForm.control}
+                        name="product"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel className="text-xs font-semibold text-sky-600 dark:text-sky-400">Nama Terpilih</FormLabel>
+                            <FormControl>
+                              <input
+                                {...field}
+                                readOnly
+                                placeholder="Auto"
+                                className="h-12 w-full rounded-xl border border-sky-200 dark:border-slate-800 bg-sky-100 dark:bg-slate-950 px-3 text-sm font-medium text-slate-700 dark:text-slate-300"
+                              />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                      <FormField
+                        control={visitCartForm.control}
+                        name="quantity"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel className="text-xs font-bold text-sky-700 dark:text-sky-400">Jumlah Fisik</FormLabel>
+                            <FormControl>
+                              <input
+                                {...field}
+                                ref={(e) => {
+                                  field.ref(e);
+                                  qtyInputRef.current = e;
+                                }}
+                                type="number"
+                                inputMode="numeric"
+                                placeholder="0"
+                                className="h-12 w-full rounded-xl border-2 border-sky-300 dark:border-sky-700 bg-sky-50/50 dark:bg-slate-900 px-3 text-center text-xl font-bold text-sky-700 dark:text-sky-300 focus:border-sky-500 focus:ring-2 focus:ring-sky-500/20 transition-all placeholder:text-sky-300"
+                              />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
                     </div>
 
-                    <button type="submit" className="inline-flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-sky-600 px-4 text-sm font-bold text-white shadow-md hover:bg-sky-700 active:scale-[0.98] transition-all">
+                    <button
+                      type="submit"
+                      className="inline-flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-sky-600 px-4 text-sm font-bold text-white shadow-md hover:bg-sky-700 active:scale-[0.98] transition-all"
+                    >
                       <Plus className="h-5 w-5" /> Tambah ke Keranjang
                     </button>
                   </form>
@@ -566,7 +700,9 @@ export default function Operations() {
                   <h3 className="flex items-center gap-2 text-lg font-bold text-slate-800 dark:text-slate-100">
                     <ShoppingCart className="h-5 w-5 text-sky-600" /> Keranjang
                   </h3>
-                  <span className="rounded-full bg-sky-100 dark:bg-sky-900/50 text-sky-700 dark:text-sky-300 px-3 py-1 text-xs font-bold">{cart.length} SKU</span>
+                  <span className="rounded-full bg-sky-100 dark:bg-sky-900/50 text-sky-700 dark:text-sky-300 px-3 py-1 text-xs font-bold">
+                    {cart.length} SKU
+                  </span>
                 </div>
 
                 {cart.length === 0 ? (
@@ -577,7 +713,10 @@ export default function Operations() {
                 ) : (
                   <ul className="space-y-3">
                     {cart.map((item, index) => (
-                      <li key={item.barcode} className="flex items-center justify-between gap-3 rounded-xl border border-sky-100 dark:border-slate-800 p-3 hover:border-sky-300 dark:hover:border-sky-700 transition-colors bg-sky-50/30 dark:bg-slate-950/30">
+                      <li
+                        key={item.barcode}
+                        className="flex items-center justify-between gap-3 rounded-xl border border-sky-100 dark:border-slate-800 p-3 hover:border-sky-300 dark:hover:border-sky-700 transition-colors bg-sky-50/30 dark:bg-slate-950/30"
+                      >
                         <div className="min-w-0">
                           <p className="truncate text-sm font-bold text-slate-800 dark:text-slate-100">{item.product}</p>
                           <p className="mt-0.5 font-mono text-[11px] text-sky-600 dark:text-sky-400">{item.barcode}</p>
@@ -585,9 +724,15 @@ export default function Operations() {
                         <div className="flex shrink-0 items-center gap-3">
                           <div className="flex flex-col items-center">
                             <span className="text-[10px] uppercase font-bold text-sky-400 dark:text-sky-600">Qty</span>
-                            <span className="font-mono text-2xl font-black text-sky-600 dark:text-sky-400 leading-none">{item.quantity}</span>
+                            <span className="font-mono text-2xl font-black text-sky-600 dark:text-sky-400 leading-none">
+                              {item.quantity}
+                            </span>
                           </div>
-                          <button type="button" onClick={() => setCart((prev) => prev.filter((_, i) => i !== index))} className="rounded-lg p-2 text-sky-400 hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-900/20 transition-colors">
+                          <button
+                            type="button"
+                            onClick={() => setCart((prev) => prev.filter((_, i) => i !== index))}
+                            className="rounded-lg p-2 text-sky-400 hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-900/20 transition-colors"
+                          >
                             <Trash2 className="h-5 w-5" />
                           </button>
                         </div>
@@ -600,11 +745,18 @@ export default function Operations() {
               <div className="rounded-2xl border border-sky-100 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-sm">
                 <Form {...visitForm}>
                   <form onSubmit={onSaveVisit}>
-                    <FormField control={visitForm.control} name="visitedAt" render={({ field }) => (
+                    <FormField
+                      control={visitForm.control}
+                      name="visitedAt"
+                      render={({ field }) => (
                         <FormItem className="mb-4">
                           <FormLabel className="text-sm font-bold text-slate-700 dark:text-slate-300">Waktu Kunjungan</FormLabel>
                           <FormControl>
-                            <input {...field} type="datetime-local" className="h-12 w-full rounded-xl border border-sky-200 dark:border-slate-800 bg-sky-50 dark:bg-slate-950 px-3 text-sm font-medium focus:border-sky-500 focus:ring-1 focus:ring-sky-500 outline-none text-slate-800 dark:text-slate-100" />
+                            <input
+                              {...field}
+                              type="datetime-local"
+                              className="h-12 w-full rounded-xl border border-sky-200 dark:border-slate-800 bg-sky-50 dark:bg-slate-950 px-3 text-sm font-medium focus:border-sky-500 focus:ring-1 focus:ring-sky-500 outline-none text-slate-800 dark:text-slate-100"
+                            />
                           </FormControl>
                           <FormMessage />
                         </FormItem>
@@ -613,54 +765,97 @@ export default function Operations() {
                     {visitForm.formState.errors.root?.message && (
                       <p className="mb-3 text-sm font-bold text-red-500">{visitForm.formState.errors.root.message}</p>
                     )}
-                    
-                    {/* TOMBOL SIMPAN DENGAN BLOKIRAN KERANJANG KOSONG */}
-                    <button 
-                      type="submit" 
-                      disabled={createVisit.isPending || cart.length === 0} 
+
+                    <button
+                      type="submit"
+                      disabled={createVisit.isPending || cart.length === 0 || !activeStore}
                       className="group inline-flex h-14 w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-sky-600 to-blue-700 px-4 text-base font-bold text-white shadow-lg shadow-sky-600/30 transition-all hover:from-sky-700 hover:to-blue-800 disabled:opacity-50 disabled:shadow-none active:scale-[0.98]"
                     >
                       <CheckCircle2 className="h-6 w-6 transition-transform group-hover:scale-110" />
                       {createVisit.isPending ? "Mengunci..." : isOnline ? "Kunci & Simpan Kunjungan" : "Simpan (Offline)"}
                     </button>
-                    
                   </form>
                 </Form>
               </div>
-
             </section>
 
             <section className="rounded-2xl border border-sky-100 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-sm h-fit">
-              <h2 className="font-serif text-xl font-bold text-slate-800 dark:text-slate-100 border-b border-sky-50 dark:border-slate-800 pb-3 mb-4">Riwayat Kunjungan</h2>
-              <p className="mb-4 text-xs font-medium text-sky-600 dark:text-sky-400">{activeStore ? `Toko: ${activeStore}` : "Pilih toko terlebih dahulu."}</p>
-              
+              <h2 className="font-serif text-xl font-bold text-slate-800 dark:text-slate-100 border-b border-sky-50 dark:border-slate-800 pb-3 mb-4">
+                Riwayat Kunjungan
+              </h2>
+              <p className="mb-4 text-xs font-medium text-sky-600 dark:text-sky-400">
+                {activeStore ? `Toko: ${activeStore}` : "Pilih toko terlebih dahulu."}
+              </p>
+
               {visitHistoryQuery.isLoading ? (
-                <div className="space-y-3 py-3"><div className="h-16 animate-pulse rounded-xl bg-sky-100 dark:bg-slate-800" /><div className="h-16 animate-pulse rounded-xl bg-sky-100 dark:bg-slate-800" /></div>
+                <div className="space-y-3 py-3">
+                  <div className="h-16 animate-pulse rounded-xl bg-sky-100 dark:bg-slate-800" />
+                  <div className="h-16 animate-pulse rounded-xl bg-sky-100 dark:bg-slate-800" />
+                </div>
               ) : visitHistoryQuery.isError ? (
-                <div className="rounded-xl border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-4 py-6 text-center"><p className="text-sm font-semibold text-red-600 dark:text-red-400">Gagal memuat riwayat</p><button type="button" onClick={() => visitHistoryQuery.refetch()} className="mt-2 text-xs font-bold text-sky-600 underline">Coba lagi</button></div>
+                <div className="rounded-xl border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-4 py-6 text-center">
+                  <p className="text-sm font-semibold text-red-600 dark:text-red-400">Gagal memuat riwayat</p>
+                  <button
+                    type="button"
+                    onClick={() => visitHistoryQuery.refetch()}
+                    className="mt-2 text-xs font-bold text-sky-600 underline"
+                  >
+                    Coba lagi
+                  </button>
+                </div>
               ) : (visitHistoryQuery.data ?? []).length === 0 ? (
-                <div className="rounded-xl border border-dashed border-sky-100 dark:border-slate-800 px-4 py-7 text-center text-sm text-sky-500 dark:text-sky-400">Belum ada data.</div>
+                <div className="rounded-xl border border-dashed border-sky-100 dark:border-slate-800 px-4 py-7 text-center text-sm text-sky-500 dark:text-sky-400">
+                  Belum ada data.
+                </div>
               ) : (
                 <>
                   <ul className="space-y-3">
                     {(visitHistoryQuery.data ?? []).slice(0, visitDisplayLimit).map((visit) => (
-                      <li key={visit.id} className="rounded-xl border border-sky-50 dark:border-slate-800 bg-sky-50/50 dark:bg-slate-950/50 p-3 hover:bg-white dark:hover:bg-slate-800 hover:border-sky-200 transition-colors">
+                      <li
+                        key={visit.id}
+                        className="rounded-xl border border-sky-50 dark:border-slate-800 bg-sky-50/50 dark:bg-slate-950/50 p-3 hover:bg-white dark:hover:bg-slate-800 hover:border-sky-200 transition-colors"
+                      >
                         <div className="flex items-start justify-between gap-3">
                           <div className="min-w-0">
                             <p className="truncate text-sm font-bold text-slate-800 dark:text-slate-100">{visit.store}</p>
                             <p className="mt-1 text-xs text-sky-600 dark:text-sky-400 font-medium">{formatDate(visit.visitedAt)}</p>
                           </div>
                           <div className="flex shrink-0 items-center gap-2">
-                            <span className="rounded-full bg-sky-100 dark:bg-sky-900/50 text-sky-700 dark:text-sky-300 px-2.5 py-1 text-[10px] font-bold">{visit.lines?.length ?? 0} SKU</span>
-                            <button type="button" onClick={() => onDeleteVisit(visit.id)} disabled={deleteVisit.isPending} className="rounded-lg p-1.5 text-sky-400 hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-900/20 transition-colors disabled:opacity-50"><Trash2 className="h-4 w-4" /></button>
+                            <span className="rounded-full bg-sky-100 dark:bg-sky-900/50 text-sky-700 dark:text-sky-300 px-2.5 py-1 text-[10px] font-bold">
+                              {visit.lines?.length ?? 0} SKU
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => onDeleteVisit(visit.id)}
+                              disabled={deleteVisit.isPending}
+                              className="rounded-lg p-1.5 text-sky-400 hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-900/20 transition-colors disabled:opacity-50"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </button>
                           </div>
                         </div>
                       </li>
                     ))}
                   </ul>
                   <div className="flex gap-2 mt-4">
-                    {visitDisplayLimit > 5 && <button type="button" onClick={() => setVisitDisplayLimit(prev => Math.max(5, prev - 5))} className="flex-1 py-2 text-xs font-bold text-slate-500 border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">Lebih Sedikit</button>}
-                    {visitDisplayLimit < (visitHistoryQuery.data ?? []).length && <button type="button" onClick={() => setVisitDisplayLimit(prev => prev + 5)} className="flex-1 py-2 text-xs font-bold text-sky-600 border border-sky-200 dark:border-sky-800 rounded-lg hover:bg-sky-50 dark:hover:bg-sky-900/30 transition-colors">Lebih Banyak</button>}
+                    {visitDisplayLimit > 5 && (
+                      <button
+                        type="button"
+                        onClick={() => setVisitDisplayLimit((prev) => Math.max(5, prev - 5))}
+                        className="flex-1 py-2 text-xs font-bold text-slate-500 border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+                      >
+                        Lebih Sedikit
+                      </button>
+                    )}
+                    {visitDisplayLimit < (visitHistoryQuery.data ?? []).length && (
+                      <button
+                        type="button"
+                        onClick={() => setVisitDisplayLimit((prev) => prev + 5)}
+                        className="flex-1 py-2 text-xs font-bold text-sky-600 border border-sky-200 dark:border-sky-800 rounded-lg hover:bg-sky-50 dark:hover:bg-sky-900/30 transition-colors"
+                      >
+                        Lebih Banyak
+                      </button>
+                    )}
                   </div>
                 </>
               )}
@@ -668,11 +863,12 @@ export default function Operations() {
           </div>
         ) : (
           <div className="grid gap-6 lg:grid-cols-[0.9fr_1fr]">
-             <section className="rounded-2xl border border-sky-100 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-sm h-fit">
-              <h2 className="font-serif text-xl font-bold text-slate-800 dark:text-slate-100 mb-4 border-b border-sky-50 dark:border-slate-800 pb-3">Catat Barang Masuk</h2>
+            <section className="rounded-2xl border border-sky-100 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-sm h-fit">
+              <h2 className="font-serif text-xl font-bold text-slate-800 dark:text-slate-100 mb-4 border-b border-sky-50 dark:border-slate-800 pb-3">
+                Catat Barang Masuk
+              </h2>
               <Form {...restockForm}>
                 <form onSubmit={onSaveRestock} className="space-y-4">
-                  
                   <div className="relative">
                     <label className="mb-2 block text-sm font-bold text-slate-700 dark:text-slate-300">Cari / Scan Produk</label>
                     <div className="flex gap-2">
@@ -696,7 +892,11 @@ export default function Operations() {
                           className="h-12 w-full rounded-xl border border-sky-200 dark:border-slate-800 bg-sky-50 dark:bg-slate-950 pl-9 pr-3 text-sm font-medium focus:border-sky-500 focus:ring-1 focus:ring-sky-500 outline-none text-slate-800 dark:text-slate-100"
                         />
                       </div>
-                      <button type="button" onClick={() => setScannerTarget("restock")} className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-sky-600 text-white shadow-sm hover:bg-sky-700 transition-colors">
+                      <button
+                        type="button"
+                        onClick={() => setScannerTarget("restock")}
+                        className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-sky-600 text-white shadow-sm hover:bg-sky-700 transition-colors"
+                      >
                         <Camera className="h-5 w-5" />
                       </button>
                     </div>
@@ -707,7 +907,11 @@ export default function Operations() {
                           <div className="p-4 text-sm text-center text-slate-500">Produk tidak ditemukan.</div>
                         ) : (
                           filteredRestockProducts.map((p) => (
-                            <div key={p.barcode} onClick={() => handleSelectRestockProduct(p)} className="p-3 text-sm hover:bg-sky-50 dark:hover:bg-slate-800 cursor-pointer border-b border-sky-50 dark:border-slate-800 last:border-0">
+                            <div
+                              key={p.barcode}
+                              onClick={() => handleSelectRestockProduct(p)}
+                              className="p-3 text-sm hover:bg-sky-50 dark:hover:bg-slate-800 cursor-pointer border-b border-sky-50 dark:border-slate-800 last:border-0"
+                            >
                               <p className="font-bold text-slate-800 dark:text-slate-100">{p.name}</p>
                               <p className="text-xs text-sky-600 dark:text-sky-400 font-mono mt-0.5">{p.barcode}</p>
                             </div>
@@ -717,19 +921,89 @@ export default function Operations() {
                     )}
                   </div>
 
-                  <FormField control={restockForm.control} name="product" render={({ field }) => (
-                      <FormItem><FormLabel className="text-sm font-bold text-slate-700 dark:text-slate-300">Nama Produk</FormLabel><FormControl><input {...field} onChange={(event) => { setRestockProductSelection(""); field.onChange(event); }} placeholder="Nama produk" className="h-12 w-full rounded-xl border border-sky-200 dark:border-slate-800 bg-sky-50 dark:bg-slate-950 px-3 text-sm font-medium focus:border-sky-500 outline-none text-slate-800 dark:text-slate-100" /></FormControl><FormMessage /></FormItem>
-                  )} />
-                  <FormField control={restockForm.control} name="quantity" render={({ field }) => (
-                      <FormItem><FormLabel className="text-sm font-bold text-sky-700 dark:text-sky-400">Jumlah Diterima</FormLabel><FormControl><input {...field} type="number" min="1" step="1" inputMode="numeric" placeholder="0" className="h-12 w-full rounded-xl border-2 border-sky-300 dark:border-sky-700 bg-sky-50/50 dark:bg-slate-900 px-3 text-center text-xl font-bold text-sky-700 dark:text-sky-300 focus:border-sky-500 outline-none" /></FormControl><FormMessage /></FormItem>
-                  )} />
-                  <FormField control={restockForm.control} name="receivedAt" render={({ field }) => (
-                      <FormItem><FormLabel className="text-sm font-bold text-slate-700 dark:text-slate-300">Waktu Diterima</FormLabel><FormControl><input {...field} type="datetime-local" className="h-12 w-full rounded-xl border border-sky-200 dark:border-slate-800 bg-sky-50 dark:bg-slate-950 px-3 text-sm font-medium focus:border-sky-500 outline-none text-slate-800 dark:text-slate-100" /></FormControl><FormMessage /></FormItem>
-                  )} />
-                  <FormField control={restockForm.control} name="note" render={({ field }) => (
-                      <FormItem><FormLabel className="text-sm font-bold text-slate-700 dark:text-slate-300">Catatan (Opsional)</FormLabel><FormControl><textarea {...field} rows={2} maxLength={500} placeholder="Contoh: pengiriman pagi" className="w-full resize-y rounded-xl border border-sky-200 dark:border-slate-800 bg-sky-50 dark:bg-slate-950 px-3 py-2 text-sm font-medium focus:border-sky-500 outline-none text-slate-800 dark:text-slate-100" /></FormControl><FormMessage /></FormItem>
-                  )} />
-                  <button type="submit" disabled={createRestock.isPending || !activeStore} className="inline-flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-sky-600 px-4 text-sm font-bold text-white shadow-md hover:bg-sky-700 active:scale-[0.98] transition-all disabled:opacity-50">
+                  <FormField
+                    control={restockForm.control}
+                    name="product"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel className="text-sm font-bold text-slate-700 dark:text-slate-300">Nama Produk</FormLabel>
+                        <FormControl>
+                          <input
+                            {...field}
+                            onChange={(event) => {
+                              setRestockProductSelection("");
+                              field.onChange(event);
+                            }}
+                            placeholder="Nama produk"
+                            className="h-12 w-full rounded-xl border border-sky-200 dark:border-slate-800 bg-sky-50 dark:bg-slate-950 px-3 text-sm font-medium focus:border-sky-500 outline-none text-slate-800 dark:text-slate-100"
+                          />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  <FormField
+                    control={restockForm.control}
+                    name="quantity"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel className="text-sm font-bold text-sky-700 dark:text-sky-400">Jumlah Diterima</FormLabel>
+                        <FormControl>
+                          <input
+                            {...field}
+                            type="number"
+                            min="1"
+                            step="1"
+                            inputMode="numeric"
+                            placeholder="0"
+                            className="h-12 w-full rounded-xl border-2 border-sky-300 dark:border-sky-700 bg-sky-50/50 dark:bg-slate-900 px-3 text-center text-xl font-bold text-sky-700 dark:text-sky-300 focus:border-sky-500 outline-none"
+                          />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  <FormField
+                    control={restockForm.control}
+                    name="receivedAt"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel className="text-sm font-bold text-slate-700 dark:text-slate-300">Waktu Diterima</FormLabel>
+                        <FormControl>
+                          <input
+                            {...field}
+                            type="datetime-local"
+                            className="h-12 w-full rounded-xl border border-sky-200 dark:border-slate-800 bg-sky-50 dark:bg-slate-950 px-3 text-sm font-medium focus:border-sky-500 outline-none text-slate-800 dark:text-slate-100"
+                          />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  <FormField
+                    control={restockForm.control}
+                    name="note"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel className="text-sm font-bold text-slate-700 dark:text-slate-300">Catatan (Opsional)</FormLabel>
+                        <FormControl>
+                          <textarea
+                            {...field}
+                            rows={2}
+                            maxLength={500}
+                            placeholder="Contoh: pengiriman pagi"
+                            className="w-full resize-y rounded-xl border border-sky-200 dark:border-slate-800 bg-sky-50 dark:bg-slate-950 px-3 py-2 text-sm font-medium focus:border-sky-500 outline-none text-slate-800 dark:text-slate-100"
+                          />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  <button
+                    type="submit"
+                    disabled={createRestock.isPending || !activeStore}
+                    className="inline-flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-sky-600 px-4 text-sm font-bold text-white shadow-md hover:bg-sky-700 active:scale-[0.98] transition-all disabled:opacity-50"
+                  >
                     <PackagePlus className="h-5 w-5" />
                     {createRestock.isPending ? "Menyimpan..." : isOnline ? "Simpan Barang Masuk" : "Simpan (Offline)"}
                   </button>
@@ -738,36 +1012,86 @@ export default function Operations() {
             </section>
 
             <section className="rounded-2xl border border-sky-100 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-sm h-fit">
-              <h2 className="font-serif text-xl font-bold text-slate-800 dark:text-slate-100 border-b border-sky-50 dark:border-slate-800 pb-3 mb-4">Riwayat Masuk</h2>
-              <p className="mb-4 text-xs font-medium text-sky-600 dark:text-sky-400">{activeStore ? `Toko: ${activeStore}` : "Semua toko."}</p>
-              <label className="mb-4 block"><span className="sr-only">Cari</span><input type="search" value={restockSearch} onChange={(event) => { setRestockSearch(event.target.value); setRestockDisplayLimit(5); }} placeholder="Cari produk..." className="h-10 w-full rounded-lg border border-sky-200 dark:border-slate-800 bg-sky-50 dark:bg-slate-950 px-3 text-sm focus:border-sky-500 outline-none text-slate-800 dark:text-slate-100" /></label>
+              <h2 className="font-serif text-xl font-bold text-slate-800 dark:text-slate-100 border-b border-sky-50 dark:border-slate-800 pb-3 mb-4">
+                Riwayat Masuk
+              </h2>
+              <p className="mb-4 text-xs font-medium text-sky-600 dark:text-sky-400">
+                {activeStore ? `Toko: ${activeStore}` : "Semua toko."}
+              </p>
+              <label className="mb-4 block">
+                <span className="sr-only">Cari</span>
+                <input
+                  type="search"
+                  value={restockSearch}
+                  onChange={(event) => {
+                    setRestockSearch(event.target.value);
+                    setRestockDisplayLimit(5);
+                  }}
+                  placeholder="Cari produk..."
+                  className="h-10 w-full rounded-lg border border-sky-200 dark:border-slate-800 bg-sky-50 dark:bg-slate-950 px-3 text-sm focus:border-sky-500 outline-none text-slate-800 dark:text-slate-100"
+                />
+              </label>
               {restockHistoryQuery.isLoading ? (
-                <div className="space-y-3 py-3"><div className="h-16 animate-pulse rounded-xl bg-sky-100 dark:bg-slate-800" /><div className="h-16 animate-pulse rounded-xl bg-sky-100 dark:bg-slate-800" /></div>
+                <div className="space-y-3 py-3">
+                  <div className="h-16 animate-pulse rounded-xl bg-sky-100 dark:bg-slate-800" />
+                  <div className="h-16 animate-pulse rounded-xl bg-sky-100 dark:bg-slate-800" />
+                </div>
               ) : visibleRestocks.length === 0 ? (
-                <div className="rounded-xl border border-dashed border-sky-100 dark:border-slate-800 px-4 py-7 text-center text-sm text-sky-500 dark:text-sky-400">Belum ada data.</div>
+                <div className="rounded-xl border border-dashed border-sky-100 dark:border-slate-800 px-4 py-7 text-center text-sm text-sky-500 dark:text-sky-400">
+                  Belum ada data.
+                </div>
               ) : (
                 <>
-                <ul className="space-y-3">
-                  {visibleRestocks.slice(0, restockDisplayLimit).map((entry) => (
-                    <li key={entry.id} className="rounded-xl border border-sky-50 dark:border-slate-800 bg-sky-50/50 dark:bg-slate-950/50 p-3 hover:bg-white dark:hover:bg-slate-800 transition-colors">
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <p className="truncate text-sm font-bold text-slate-800 dark:text-slate-100">{entry.product} <span className="font-mono text-[10px] font-normal text-sky-600 dark:text-sky-400">· {entry.barcode}</span></p>
-                          <p className="mt-1 text-xs text-sky-600 dark:text-sky-400 font-medium">{formatDate(entry.receivedAt)}</p>
-                          {entry.note && <p className="mt-1 text-xs text-slate-500 dark:text-slate-400 italic">{entry.note}</p>}
+                  <ul className="space-y-3">
+                    {visibleRestocks.slice(0, restockDisplayLimit).map((entry) => (
+                      <li
+                        key={entry.id}
+                        className="rounded-xl border border-sky-50 dark:border-slate-800 bg-sky-50/50 dark:bg-slate-950/50 p-3 hover:bg-white dark:hover:bg-slate-800 transition-colors"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-bold text-slate-800 dark:text-slate-100">
+                              {entry.product}{" "}
+                              <span className="font-mono text-[10px] font-normal text-sky-600 dark:text-sky-400">· {entry.barcode}</span>
+                            </p>
+                            <p className="mt-1 text-xs text-sky-600 dark:text-sky-400 font-medium">{formatDate(entry.receivedAt)}</p>
+                            {entry.note && <p className="mt-1 text-xs text-slate-500 dark:text-slate-400 italic">{entry.note}</p>}
+                          </div>
+                          <div className="flex shrink-0 flex-col items-end gap-2">
+                            <span className="font-mono text-lg font-black text-sky-600 dark:text-sky-400">+{entry.effectiveQuantity}</span>
+                            <button
+                              type="button"
+                              onClick={() => onDeleteRestock(entry)}
+                              disabled={deleteRestock.isPending}
+                              className="inline-flex h-7 items-center gap-1 rounded-md border border-red-200 dark:border-red-900/50 px-2 text-[10px] font-bold text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 disabled:opacity-50 transition-colors"
+                            >
+                              <Trash2 className="h-3 w-3" /> Hapus
+                            </button>
+                          </div>
                         </div>
-                        <div className="flex shrink-0 flex-col items-end gap-2">
-                          <span className="font-mono text-lg font-black text-sky-600 dark:text-sky-400">+{entry.effectiveQuantity}</span>
-                          <button type="button" onClick={() => onDeleteRestock(entry)} disabled={deleteRestock.isPending} className="inline-flex h-7 items-center gap-1 rounded-md border border-red-200 dark:border-red-900/50 px-2 text-[10px] font-bold text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 disabled:opacity-50 transition-colors"><Trash2 className="h-3 w-3" /> Hapus</button>
-                        </div>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-                <div className="flex gap-2 mt-4">
-                  {restockDisplayLimit > 5 && <button type="button" onClick={() => setRestockDisplayLimit(prev => Math.max(5, prev - 5))} className="flex-1 py-2 text-xs font-bold text-slate-500 border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">Lebih Sedikit</button>}
-                  {restockDisplayLimit < visibleRestocks.length && <button type="button" onClick={() => setRestockDisplayLimit(prev => prev + 5)} className="flex-1 py-2 text-xs font-bold text-sky-600 border border-sky-200 dark:border-sky-800 rounded-lg hover:bg-sky-50 dark:hover:bg-sky-900/30 transition-colors">Lebih Banyak</button>}
-                </div>
+                      </li>
+                    ))}
+                  </ul>
+                  <div className="flex gap-2 mt-4">
+                    {restockDisplayLimit > 5 && (
+                      <button
+                        type="button"
+                        onClick={() => setRestockDisplayLimit((prev) => Math.max(5, prev - 5))}
+                        className="flex-1 py-2 text-xs font-bold text-slate-500 border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+                      >
+                        Lebih Sedikit
+                      </button>
+                    )}
+                    {restockDisplayLimit < visibleRestocks.length && (
+                      <button
+                        type="button"
+                        onClick={() => setRestockDisplayLimit((prev) => prev + 5)}
+                        className="flex-1 py-2 text-xs font-bold text-sky-600 border border-sky-200 dark:border-sky-800 rounded-lg hover:bg-sky-50 dark:hover:bg-sky-900/30 transition-colors"
+                      >
+                        Lebih Banyak
+                      </button>
+                    )}
+                  </div>
                 </>
               )}
             </section>
