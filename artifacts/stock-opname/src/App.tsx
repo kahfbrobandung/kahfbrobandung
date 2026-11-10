@@ -8,7 +8,8 @@ import OperationsPage from '@/pages/Operations';
 import DailySalesReport from '@/pages/DailySalesReport';
 import LoginPage from '@/pages/Login';
 import OnboardingPage from '@/pages/Onboarding';
-import ResetPasswordPage from '@/pages/ResetPassword'; // <-- TAMBAHAN IMPORT
+import ResetPasswordPage from '@/pages/ResetPassword';
+import SubscriptionPage from '@/pages/Subscription'; // <-- TAMBAHAN IMPORT LANGGANAN
 import { supabase } from './supabase'; 
 import { Route, Switch, Router as WouterRouter, useLocation } from 'wouter';
 import { useHashLocation } from 'wouter/use-hash-location';
@@ -65,7 +66,7 @@ function Router() {
     return (
       <Switch>
         <Route path="/login" component={LoginPage} />
-        <Route path="/reset-password" component={ResetPasswordPage} /> {/* RUTE RESET PASSWORD */}
+        <Route path="/reset-password" component={ResetPasswordPage} />
         <Route>
           {() => {
             setLocation('/login');
@@ -86,7 +87,7 @@ function Router() {
     return (
       <Switch>
         <Route path="/onboarding" component={OnboardingPage} />
-        <Route path="/reset-password" component={ResetPasswordPage} /> {/* RUTE RESET PASSWORD */}
+        <Route path="/reset-password" component={ResetPasswordPage} />
         <Route>
           {() => {
             setLocation('/onboarding');
@@ -103,7 +104,8 @@ function Router() {
       <Route path="/" component={HomePage} />
       <Route path="/operasional" component={OperationsPage} />
       <Route path="/dashboard" component={DailySalesReport} />
-      <Route path="/reset-password" component={ResetPasswordPage} /> {/* RUTE RESET PASSWORD */}
+      <Route path="/subscription" component={SubscriptionPage} /> {/* <-- RUTE BARU LANGGANAN */}
+      <Route path="/reset-password" component={ResetPasswordPage} />
       <Route path="/login">
         {() => {
           setLocation('/');
