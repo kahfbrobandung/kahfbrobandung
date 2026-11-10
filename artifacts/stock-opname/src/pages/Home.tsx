@@ -10,7 +10,7 @@ import {
 } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Link, useLocation } from 'wouter';
-import { supabase } from '@/lib/supabase';
+import { supabase } from '@/supabase'; // <-- INI DIPERBAIKI (Hapus 'lib/')
 import {
   getGetSalesActivityQueryKey,
   getGetSalesMonitorQueryKey,
