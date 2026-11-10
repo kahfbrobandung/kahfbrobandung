@@ -1,13 +1,26 @@
+import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { setBaseUrl } from '@workspace/api-client-react';
 import App from './App';
 import './index.css';
 import { ThemeProvider } from './components/theme-provider';
 
-setBaseUrl('https://workspaceapi-server-production-07b9.up.railway.app');
+// 1. PERBAIKAN: Arahkan ke Backend Vercel (Bukan Railway lagi)
+setBaseUrl('https://kahfbrobandung-7qyj.vercel.app');
 
 createRoot(document.getElementById('root')!).render(
-  <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
-    <App />
-  </ThemeProvider>
+  <React.StrictMode>
+    <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
+      <App />
+    </ThemeProvider>
+  </React.StrictMode>
 );
+
+// 2. PERBAIKAN: Hilangkan layar loading di index.html setelah aplikasi siap
+const loader = document.getElementById('initial-loader');
+if (loader) {
+  loader.style.opacity = '0'; // Efek fade out
+  setTimeout(() => {
+    loader.remove(); // Hapus elemen dari layar
+  }, 300);
+}
