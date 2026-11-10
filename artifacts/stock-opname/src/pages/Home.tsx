@@ -17,8 +17,6 @@ import {
   getListStockBalancesQueryKey,
   getListStoresQueryKey,
   useListStores,
-  getHealthCheckQueryKey,
-  useHealthCheck,
   useCreateStockEntry,
   useListStockBalances,
   customFetch,
@@ -66,7 +64,6 @@ export default function Home() {
   const activeStore = storeName.trim();
 
   // Queries
-  const { data: health } = useHealthCheck({ query: { queryKey: getHealthCheckQueryKey(), refetchInterval: 30000 } });
   const storesQuery = useListStores({ query: { queryKey: getListStoresQueryKey(), staleTime: 300000 } });
   
   const { data: stockBalances = [] } = useListStockBalances(
@@ -219,7 +216,7 @@ export default function Home() {
           </div>
         </div>
         
-        {/* TOMBOL NAVIGASI (SUDAH DITAMBAH LANGGANAN) */}
+        {/* TOMBOL NAVIGASI */}
         <div className="flex gap-2">
           <Link href="/operasional" className="flex-1 bg-white/10 hover:bg-white/20 transition-colors rounded-xl py-2 text-center text-[10px] sm:text-xs font-semibold shadow-sm">Kunjungan SO</Link>
           <Link href="/dashboard" className="flex-1 bg-white/10 hover:bg-white/20 transition-colors rounded-xl py-2 text-center text-[10px] sm:text-xs font-semibold shadow-sm">Laporan</Link>
