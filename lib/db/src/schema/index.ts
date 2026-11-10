@@ -14,3 +14,4 @@ export type User = typeof usersTable.$inferSelect;
 // Menambahkan export agar tabel lain terbaca oleh backend
 export * from "./stock-entries";
 export * from "./store-sales";
+export * from "./subscriptions"; // <-- INI YANG BARU KITA TAMBAHKAN
