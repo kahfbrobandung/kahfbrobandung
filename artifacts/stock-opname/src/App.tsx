@@ -8,7 +8,8 @@ import OperationsPage from '@/pages/Operations';
 import DailySalesReport from '@/pages/DailySalesReport';
 import LoginPage from '@/pages/Login';
 import OnboardingPage from '@/pages/Onboarding';
-import { supabase } from './supabase'; // Sudah benar (tanpa lib/)
+import ResetPasswordPage from '@/pages/ResetPassword'; // <-- TAMBAHAN IMPORT
+import { supabase } from './supabase'; 
 import { Route, Switch, Router as WouterRouter, useLocation } from 'wouter';
 import { useHashLocation } from 'wouter/use-hash-location';
 import { setAuthTokenGetter, setBaseUrl, useListStores } from '@workspace/api-client-react';
@@ -59,11 +60,12 @@ function Router() {
     return <div className="min-h-screen flex items-center justify-center font-medium">Memuat...</div>;
   }
 
-  // Jika belum login, arahkan ke halaman Login
+  // Jika belum login, arahkan ke halaman Login atau Reset Password
   if (!session) {
     return (
       <Switch>
         <Route path="/login" component={LoginPage} />
+        <Route path="/reset-password" component={ResetPasswordPage} /> {/* RUTE RESET PASSWORD */}
         <Route>
           {() => {
             setLocation('/login');
@@ -79,11 +81,12 @@ function Router() {
     return <div className="min-h-screen flex items-center justify-center font-medium text-slate-500">Mengecek data toko...</div>;
   }
 
-  // PERBAIKAN BUG: Gunakan optional chaining (?.) agar tidak crash jika data undefined
+  // Jika sudah login tapi belum punya toko, paksa ke Onboarding
   if (storesQuery.isSuccess && storesQuery.data?.length === 0) {
     return (
       <Switch>
         <Route path="/onboarding" component={OnboardingPage} />
+        <Route path="/reset-password" component={ResetPasswordPage} /> {/* RUTE RESET PASSWORD */}
         <Route>
           {() => {
             setLocation('/onboarding');
@@ -100,6 +103,7 @@ function Router() {
       <Route path="/" component={HomePage} />
       <Route path="/operasional" component={OperationsPage} />
       <Route path="/dashboard" component={DailySalesReport} />
+      <Route path="/reset-password" component={ResetPasswordPage} /> {/* RUTE RESET PASSWORD */}
       <Route path="/login">
         {() => {
           setLocation('/');
