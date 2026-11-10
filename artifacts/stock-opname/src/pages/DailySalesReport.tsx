@@ -4,6 +4,17 @@ import { ArrowLeft, TrendingUp, PackageMinus } from "lucide-react";
 import { useGetSalesMonitor } from "@workspace/api-client-react";
 import { useStoreName } from "@/hooks/useStoreName";
 
+// Helper untuk mendapatkan format YYYY-MM-DD berdasarkan waktu LOKAL (WIB), bukan UTC
+const getLocalDateString = (dateString: string) => {
+  try {
+    const d = new Date(dateString);
+    // Menggunakan en-CA menghasilkan format YYYY-MM-DD
+    return d.toLocaleDateString('en-CA'); 
+  } catch {
+    return new Date().toLocaleDateString('en-CA');
+  }
+};
+
 export default function DailySalesReport() {
   const [storeName] = useStoreName();
   const activeStore = storeName.trim();
@@ -12,9 +23,14 @@ export default function DailySalesReport() {
   const [visibleDatesCount, setVisibleDatesCount] = useState(1);
 
   // Default filter 30 hari terakhir
-  const [dateRange, setDateRange] = useState({
-    from: new Date(new Date().setDate(new Date().getDate() - 30)).toISOString().split("T")[0],
-    to: new Date().toISOString().split("T")[0],
+  const [dateRange, setDateRange] = useState(() => {
+    const today = new Date();
+    const lastMonth = new Date();
+    lastMonth.setDate(today.getDate() - 30);
+    return {
+      from: lastMonth.toLocaleDateString('en-CA'),
+      to: today.toLocaleDateString('en-CA'),
+    };
   });
 
   // Ambil data perhitungan otomatis dari Kunjungan SO
@@ -27,12 +43,17 @@ export default function DailySalesReport() {
   // Filter hanya barang yang benar-benar terjual (di atas 0)
   const soldItems = salesMonitor?.calculations?.filter((item) => item.soldQuantity > 0) || [];
 
-  // 1. PERBAIKAN: Kelompokkan & Gabungkan (Agregasi) barang berdasarkan tanggal SO
+  // 1. PERBAIKAN: Kelompokkan & Gabungkan barang berdasarkan tanggal SO (Anti Timezone Error)
   const groupedItems = useMemo(() => {
     const groups: Record<string, Record<string, any>> = {};
     
-    soldItems.forEach((item) => {
-      const dateStr = new Date(item.currentVisitAt).toISOString().split("T")[0];
+    // Urutkan data dari yang paling lama ke paling baru agar stok akhir akurat
+    const sortedSoldItems = [...soldItems].sort((a, b) => 
+      new Date(a.currentVisitAt).getTime() - new Date(b.currentVisitAt).getTime()
+    );
+
+    sortedSoldItems.forEach((item) => {
+      const dateStr = getLocalDateString(item.currentVisitAt);
       
       if (!groups[dateStr]) groups[dateStr] = {};
       
@@ -44,6 +65,7 @@ export default function DailySalesReport() {
           soldQuantity: 0,
           restockQuantity: 0,
           stockEntryAdjustment: 0,
+          latestVisitTime: 0, // Untuk melacak stok terbaru
         };
       }
       
@@ -52,9 +74,13 @@ export default function DailySalesReport() {
       groups[dateStr][key].restockQuantity += item.restockQuantity;
       groups[dateStr][key].stockEntryAdjustment += item.stockEntryAdjustment;
       
-      // Ambil data stok terakhir dari kunjungan paling akhir di hari itu
-      groups[dateStr][key].currentStock = item.currentStock;
-      groups[dateStr][key].previousStock = item.previousStock;
+      // PERBAIKAN: Hanya ambil stok jika waktunya lebih baru dari yang sudah tersimpan
+      const visitTime = new Date(item.currentVisitAt).getTime();
+      if (visitTime >= groups[dateStr][key].latestVisitTime) {
+        groups[dateStr][key].currentStock = item.currentStock;
+        groups[dateStr][key].previousStock = item.previousStock;
+        groups[dateStr][key].latestVisitTime = visitTime;
+      }
     });
     
     // Ubah kembali ke bentuk array agar mudah dirender
@@ -97,6 +123,7 @@ export default function DailySalesReport() {
             <input
               type="date"
               value={dateRange.from}
+              max={dateRange.to} // PERBAIKAN: Cegah pilih tanggal dari yang lebih besar dari sampai
               onChange={(e) => {
                 setDateRange({ ...dateRange, from: e.target.value });
                 setVisibleDatesCount(1);
@@ -109,6 +136,7 @@ export default function DailySalesReport() {
             <input
               type="date"
               value={dateRange.to}
+              min={dateRange.from} // PERBAIKAN: Cegah pilih tanggal sampai yang lebih kecil dari dari
               onChange={(e) => {
                 setDateRange({ ...dateRange, to: e.target.value });
                 setVisibleDatesCount(1);
@@ -129,11 +157,11 @@ export default function DailySalesReport() {
             <div className="grid grid-cols-2 gap-4">
               <div className="bg-sky-50 dark:bg-sky-900/20 rounded-xl p-3 border border-sky-100 dark:border-sky-800">
                 <p className="text-xs text-sky-600 dark:text-sky-400">Total Terjual</p>
-                <p className="text-2xl font-bold text-sky-700 dark:text-sky-300">{salesMonitor.summary.totalSold}</p>
+                <p className="text-2xl font-bold text-sky-700 dark:text-sky-300">{salesMonitor?.summary?.totalSold ?? 0}</p>
               </div>
               <div className="bg-sky-50 dark:bg-sky-900/20 rounded-xl p-3 border border-sky-100 dark:border-sky-800">
                 <p className="text-xs text-sky-600 dark:text-sky-400">Total Restock</p>
-                <p className="text-2xl font-bold text-sky-700 dark:text-sky-300">{salesMonitor.summary.totalRestocked}</p>
+                <p className="text-2xl font-bold text-sky-700 dark:text-sky-300">{salesMonitor?.summary?.totalRestocked ?? 0}</p>
               </div>
             </div>
           </div>
@@ -237,4 +265,4 @@ export default function DailySalesReport() {
       </main>
     </div>
   );
-} 
+}
