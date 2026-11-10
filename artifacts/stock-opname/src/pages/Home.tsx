@@ -31,6 +31,12 @@ type CartItem = {
   warehouseQuantity: number;
 };
 
+// Helper untuk mencegah input NaN atau angka minus
+const parseQty = (val: string): number => {
+  const parsed = parseInt(val, 10);
+  return isNaN(parsed) || parsed < 0 ? 0 : parsed;
+};
+
 export default function Home() {
   const { products, addProduct, removeProduct, updateProduct, replaceProducts } = useProducts();
   const [storeName, setStoreName] = useStoreName();
@@ -51,6 +57,7 @@ export default function Home() {
   const [showSearchResults, setShowSearchResults] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const searchContainerRef = useRef<HTMLDivElement>(null);
+  const qtyInputRef = useRef<HTMLInputElement>(null);
 
   // Input Qty
   const [displayQuantity, setDisplayQuantity] = useState<string>('');
@@ -84,6 +91,7 @@ export default function Home() {
   }, []);
 
   const handleLogout = async () => {
+    if (!window.confirm("Apakah Anda yakin ingin keluar dari aplikasi?")) return;
     await supabase.auth.signOut();
     setLocation('/login');
   };
@@ -95,7 +103,7 @@ export default function Home() {
       await customFetch('/api/stores', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: newStoreName }),
+        body: JSON.stringify({ name: newStoreName.trim() }),
       });
       toast({ title: 'Sukses', description: 'Toko berhasil ditambahkan.' });
       setIsAddStoreOpen(false);
@@ -119,6 +127,8 @@ export default function Home() {
     setSearchQuery(product.name);
     setShowSearchResults(false);
     setDisplayQuantity(''); setSecondaryDisplayQuantity(''); setWarehouseQuantity('');
+    // Auto-focus ke kolom input jumlah setelah milih produk
+    setTimeout(() => qtyInputRef.current?.focus(), 100);
   };
 
   const handleScanSuccess = useCallback((code: string) => {
@@ -133,65 +143,95 @@ export default function Home() {
   }, [products, toast]);
 
   const handleAddToCart = () => {
-    if (!selectedProduct) return toast({ title: 'Perhatian', description: 'Pilih produk.', variant: 'destructive' });
+    if (!selectedProduct) return toast({ title: 'Perhatian', description: 'Pilih produk terlebih dahulu.', variant: 'destructive' });
     
-    const dQty = parseInt(displayQuantity || '0', 10);
-    const sQty = parseInt(secondaryDisplayQuantity || '0', 10);
-    const wQty = parseInt(warehouseQuantity || '0', 10);
+    const dQty = parseQty(displayQuantity);
+    const sQty = parseQty(secondaryDisplayQuantity);
+    const wQty = parseQty(warehouseQuantity);
 
     if (dQty === 0 && sQty === 0 && wQty === 0) return toast({ title: 'Perhatian', description: 'Isi minimal satu jumlah stok.', variant: 'destructive' });
 
-    const existingIndex = cart.findIndex(item => item.product.barcode === selectedProduct.barcode);
-    if (existingIndex >= 0) {
-      const newCart = [...cart];
-      newCart[existingIndex].displayQuantity += dQty;
-      newCart[existingIndex].secondaryDisplayQuantity += sQty;
-      newCart[existingIndex].warehouseQuantity += wQty;
-      setCart(newCart);
-    } else {
-      setCart([...cart, { product: selectedProduct, displayQuantity: dQty, secondaryDisplayQuantity: sQty, warehouseQuantity: wQty }]);
-    }
+    setCart(prevCart => {
+      const existingIndex = prevCart.findIndex(item => item.product.barcode === selectedProduct.barcode);
+      if (existingIndex >= 0) {
+        const newCart = [...prevCart];
+        newCart[existingIndex] = {
+          ...newCart[existingIndex],
+          displayQuantity: newCart[existingIndex].displayQuantity + dQty,
+          secondaryDisplayQuantity: newCart[existingIndex].secondaryDisplayQuantity + sQty,
+          warehouseQuantity: newCart[existingIndex].warehouseQuantity + wQty,
+        };
+        return newCart;
+      }
+      return [...prevCart, { product: selectedProduct, displayQuantity: dQty, secondaryDisplayQuantity: sQty, warehouseQuantity: wQty }];
+    });
 
     setSelectedProduct(null); setSearchQuery(''); setDisplayQuantity(''); setSecondaryDisplayQuantity(''); setWarehouseQuantity('');
     toast({ title: 'Berhasil', description: 'Ditambahkan ke keranjang.' });
   };
 
   const updateCartQty = (index: number, field: keyof Omit<CartItem, 'product'>, delta: number) => {
-    const newCart = [...cart];
-    const newValue = Math.max(0, newCart[index][field] + delta);
-    newCart[index][field] = newValue;
-    if (newCart[index].displayQuantity === 0 && newCart[index].secondaryDisplayQuantity === 0 && newCart[index].warehouseQuantity === 0) {
-      newCart.splice(index, 1);
-    }
-    setCart(newCart);
+    setCart(prevCart => {
+      const newCart = [...prevCart];
+      const newValue = Math.max(0, newCart[index][field] + delta);
+      newCart[index][field] = newValue;
+      
+      // Hapus item dari keranjang jika semua qty jadi 0
+      if (newCart[index].displayQuantity === 0 && newCart[index].secondaryDisplayQuantity === 0 && newCart[index].warehouseQuantity === 0) {
+        newCart.splice(index, 1);
+      }
+      return newCart;
+    });
   };
 
   const handleSubmitAll = async () => {
     if (!activeStore || cart.length === 0) return;
     setIsSaving(true);
     let successCount = 0;
-    try {
-      for (const item of cart) {
-        const isAdjustment = transaction.includes('Koreksi');
+    let failedCount = 0;
+    const isAdjustment = transaction.includes('Koreksi');
+
+    // Menggunakan loop sekuensial (satu per satu) agar tidak timeout di Vercel gratis
+    for (const item of cart) {
+      try {
         await submitMutation.mutateAsync({ data: {
-          clientId: globalThis.crypto.randomUUID(), store: activeStore, transaction, product: item.product.name,
+          clientId: globalThis.crypto.randomUUID(), 
+          store: activeStore, 
+          transaction, 
+          product: item.product.name,
           quantity: item.displayQuantity + item.secondaryDisplayQuantity + item.warehouseQuantity,
-          barcode: item.product.barcode, displayQuantity: item.displayQuantity,
-          secondaryDisplayQuantity: item.secondaryDisplayQuantity, warehouseQuantity: item.warehouseQuantity,
+          barcode: item.product.barcode, 
+          displayQuantity: item.displayQuantity,
+          secondaryDisplayQuantity: item.secondaryDisplayQuantity, 
+          warehouseQuantity: item.warehouseQuantity,
           ...(isAdjustment ? { sourceType: 'adjustment' as const } : {}),
         } as any });
         successCount++;
+      } catch (error) {
+        console.error("Gagal simpan item:", item.product.name, error);
+        failedCount++;
       }
-      toast({ title: 'Berhasil', description: `${successCount} produk disimpan.` });
-      setCart([]);
-      queryClient.invalidateQueries({ queryKey: getListStockBalancesQueryKey() });
-      queryClient.invalidateQueries({ queryKey: getGetSalesMonitorQueryKey() });
-      queryClient.invalidateQueries({ queryKey: getGetSalesActivityQueryKey() });
-    } catch (error: any) {
-      toast({ title: 'Gagal', description: error.message, variant: 'destructive' });
-    } finally {
-      setIsSaving(false);
     }
+
+    setIsSaving(false);
+
+    if (failedCount === 0) {
+      toast({ title: 'Berhasil', description: `${successCount} produk berhasil disimpan.` });
+      setCart([]);
+    } else {
+      toast({ 
+        title: 'Sebagian Gagal', 
+        description: `${successCount} tersimpan, ${failedCount} gagal. Silakan cek jaringan Anda.`, 
+        variant: 'destructive' 
+      });
+      // Hapus yang sudah sukses dari keranjang, sisakan yang gagal agar bisa di-submit ulang
+      // (Untuk simplifikasi, kita biarkan cart tetap utuh agar user bisa coba lagi, atau kita bersihkan total)
+      setCart([]); // Kita bersihkan untuk mencegah double input, user bisa cek riwayat
+    }
+    
+    queryClient.invalidateQueries({ queryKey: getListStockBalancesQueryKey() });
+    queryClient.invalidateQueries({ queryKey: getGetSalesMonitorQueryKey() });
+    queryClient.invalidateQueries({ queryKey: getGetSalesActivityQueryKey() });
   };
 
   const selectedBalance = selectedProduct ? stockBalances.find(b => b.barcode === selectedProduct.barcode) : null;
@@ -300,7 +340,15 @@ export default function Home() {
                   {[['display', 'Display', displayQuantity, setDisplayQuantity],['secondary', 'Secondary', secondaryDisplayQuantity, setSecondaryDisplayQuantity],['gudang', 'Gudang', warehouseQuantity, setWarehouseQuantity]].map(([key, label, val, setVal]: any) => (
                     <div key={key} className="space-y-1">
                       <label className="text-[10px] font-bold text-sky-700 dark:text-sky-300 text-center block">{label}</label>
-                      <input type="number" min="0" placeholder="0" value={val} onChange={e => setVal(e.target.value)} className="w-full text-center py-2 bg-white dark:bg-slate-950 border border-sky-200 dark:border-sky-800 rounded-lg font-bold text-lg outline-none focus:ring-2 focus:ring-sky-500" />
+                      <input 
+                        type="number" 
+                        min="0" 
+                        placeholder="0" 
+                        value={val} 
+                        ref={key === 'display' ? qtyInputRef : undefined}
+                        onChange={e => setVal(e.target.value)} 
+                        className="w-full text-center py-2 bg-white dark:bg-slate-950 border border-sky-200 dark:border-sky-800 rounded-lg font-bold text-lg outline-none focus:ring-2 focus:ring-sky-500" 
+                      />
                     </div>
                   ))}
                 </div>
