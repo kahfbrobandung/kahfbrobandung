@@ -1,14 +1,25 @@
 import { useState, useMemo } from "react";
 import { Link } from "wouter";
-import { ArrowLeft, TrendingUp, PackageMinus } from "lucide-react";
+import { ArrowLeft, TrendingUp, PackageMinus, AlertCircle } from "lucide-react";
 import { useGetSalesMonitor } from "@workspace/api-client-react";
 import { useStoreName } from "@/hooks/useStoreName";
 
-// Helper untuk mendapatkan format YYYY-MM-DD berdasarkan waktu LOKAL (WIB), bukan UTC
+// Tipe data untuk memastikan TypeScript aman
+type GroupedItem = {
+  store: string;
+  product: string;
+  barcode: string;
+  previousStock: number;
+  restockQuantity: number;
+  stockEntryAdjustment: number;
+  currentStock: number;
+  soldQuantity: number;
+  latestVisitTime: number;
+};
+
 const getLocalDateString = (dateString: string) => {
   try {
     const d = new Date(dateString);
-    // Menggunakan en-CA menghasilkan format YYYY-MM-DD
     return d.toLocaleDateString('en-CA'); 
   } catch {
     return new Date().toLocaleDateString('en-CA');
@@ -19,10 +30,8 @@ export default function DailySalesReport() {
   const [storeName] = useStoreName();
   const activeStore = storeName.trim();
   
-  // STATE UNTUK PAGINATION LAPORAN BERDASARKAN TANGGAL
   const [visibleDatesCount, setVisibleDatesCount] = useState(1);
 
-  // Default filter 30 hari terakhir
   const [dateRange, setDateRange] = useState(() => {
     const today = new Date();
     const lastMonth = new Date();
@@ -33,71 +42,76 @@ export default function DailySalesReport() {
     };
   });
 
-  // Ambil data perhitungan otomatis dari Kunjungan SO
-  const { data: salesMonitor, isLoading: monitorLoading } = useGetSalesMonitor({
+  // Tambahkan isError untuk menangkap jika API gagal (misal Vercel timeout)
+  const { data: salesMonitor, isLoading: monitorLoading, isError } = useGetSalesMonitor({
     from: dateRange.from,
     to: dateRange.to,
     store: activeStore || undefined,
   });
 
-  // Filter hanya barang yang benar-benar terjual (di atas 0)
-  const soldItems = salesMonitor?.calculations?.filter((item) => item.soldQuantity > 0) || [];
+  // PERBAIKAN 1: Jangan buang barang yang tidak terjual (0) jika ada Stok Masuk (Restock)
+  const activeItems = salesMonitor?.calculations?.filter(
+    (item) => item.soldQuantity > 0 || item.restockQuantity > 0 || item.stockEntryAdjustment !== 0
+  ) || [];
 
-  // 1. PERBAIKAN: Kelompokkan & Gabungkan barang berdasarkan tanggal SO (Anti Timezone Error)
   const groupedItems = useMemo(() => {
-    const groups: Record<string, Record<string, any>> = {};
+    const groups: Record<string, Record<string, GroupedItem>> = {};
     
-    // Urutkan data dari yang paling lama ke paling baru agar stok akhir akurat
-    const sortedSoldItems = [...soldItems].sort((a, b) => 
+    const sortedItems = [...activeItems].sort((a, b) => 
       new Date(a.currentVisitAt).getTime() - new Date(b.currentVisitAt).getTime()
     );
 
-    sortedSoldItems.forEach((item) => {
+    sortedItems.forEach((item) => {
       const dateStr = getLocalDateString(item.currentVisitAt);
       
       if (!groups[dateStr]) groups[dateStr] = {};
       
       const key = item.barcode;
       if (!groups[dateStr][key]) {
-        // Jika barang belum ada di tanggal ini, buat data awal
         groups[dateStr][key] = {
-          ...item,
-          soldQuantity: 0,
+          store: item.store,
+          product: item.product,
+          barcode: item.barcode,
+          previousStock: item.previousStock,
           restockQuantity: 0,
           stockEntryAdjustment: 0,
-          latestVisitTime: 0, // Untuk melacak stok terbaru
+          currentStock: item.currentStock,
+          soldQuantity: 0,
+          latestVisitTime: 0,
         };
       }
       
-      // Jumlahkan kuantitasnya
-      groups[dateStr][key].soldQuantity += item.soldQuantity;
-      groups[dateStr][key].restockQuantity += item.restockQuantity;
-      groups[dateStr][key].stockEntryAdjustment += item.stockEntryAdjustment;
+      // PERBAIKAN 2: Pastikan data berupa Number agar tidak terjadi NaN (Not a Number)
+      groups[dateStr][key].soldQuantity += Number(item.soldQuantity);
+      groups[dateStr][key].restockQuantity += Number(item.restockQuantity);
+      groups[dateStr][key].stockEntryAdjustment += Number(item.stockEntryAdjustment);
       
-      // PERBAIKAN: Hanya ambil stok jika waktunya lebih baru dari yang sudah tersimpan
       const visitTime = new Date(item.currentVisitAt).getTime();
       if (visitTime >= groups[dateStr][key].latestVisitTime) {
-        groups[dateStr][key].currentStock = item.currentStock;
-        groups[dateStr][key].previousStock = item.previousStock;
+        groups[dateStr][key].currentStock = Number(item.currentStock);
+        groups[dateStr][key].previousStock = Number(item.previousStock);
         groups[dateStr][key].latestVisitTime = visitTime;
       }
     });
     
-    // Ubah kembali ke bentuk array agar mudah dirender
-    const result: Record<string, any[]> = {};
+    const result: Record<string, GroupedItem[]> = {};
     Object.keys(groups).forEach(date => {
       result[date] = Object.values(groups[date]);
     });
     return result;
-  }, [soldItems]);
+  }, [activeItems]);
 
-  // 2. Ambil semua tanggal unik dan urutkan dari yang terbaru
   const sortedDates = useMemo(() => {
     return Object.keys(groupedItems).sort((a, b) => b.localeCompare(a));
   }, [groupedItems]);
 
-  // 3. Potong tanggal yang mau ditampilkan
   const visibleDates = sortedDates.slice(0, visibleDatesCount);
+
+  // Helper untuk format tanggal aman dari timezone bug
+  const formatDateIndo = (dateString: string) => {
+    const d = new Date(`${dateString}T00:00:00`); // Paksa waktu lokal, bukan UTC
+    return d.toLocaleDateString("id-ID", { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' });
+  };
 
   return (
     <div className="min-h-[100dvh] w-full bg-slate-50 dark:bg-slate-950 flex flex-col items-center pb-12">
@@ -123,7 +137,7 @@ export default function DailySalesReport() {
             <input
               type="date"
               value={dateRange.from}
-              max={dateRange.to} // PERBAIKAN: Cegah pilih tanggal dari yang lebih besar dari sampai
+              max={dateRange.to} 
               onChange={(e) => {
                 setDateRange({ ...dateRange, from: e.target.value });
                 setVisibleDatesCount(1);
@@ -136,7 +150,7 @@ export default function DailySalesReport() {
             <input
               type="date"
               value={dateRange.to}
-              min={dateRange.from} // PERBAIKAN: Cegah pilih tanggal sampai yang lebih kecil dari dari
+              min={dateRange.from} 
               onChange={(e) => {
                 setDateRange({ ...dateRange, to: e.target.value });
                 setVisibleDatesCount(1);
@@ -145,6 +159,14 @@ export default function DailySalesReport() {
             />
           </div>
         </div>
+
+        {/* Tampilan Jika API Error */}
+        {isError && (
+          <div className="bg-red-50 border border-red-200 text-red-600 rounded-2xl p-4 flex items-center gap-3">
+            <AlertCircle size={20} />
+            <p className="text-sm font-medium">Gagal memuat data. Koneksi ke server terputus.</p>
+          </div>
+        )}
 
         {/* Ringkasan Penjualan */}
         {monitorLoading ? (
@@ -167,10 +189,10 @@ export default function DailySalesReport() {
           </div>
         ) : null}
 
-        {/* Daftar Barang Terjual */}
+        {/* Daftar Barang */}
         <div className="bg-white dark:bg-slate-900 border border-sky-100 dark:border-slate-800 shadow-sm rounded-2xl p-5">
           <h3 className="font-serif text-lg font-bold mb-4 flex items-center gap-2 text-slate-800 dark:text-slate-100">
-            <PackageMinus size={18} className="text-sky-600" /> Daftar Barang Terjual
+            <PackageMinus size={18} className="text-sky-600" /> Aktivitas Stok & Penjualan
           </h3>
           
           {monitorLoading ? (
@@ -178,10 +200,10 @@ export default function DailySalesReport() {
               <div className="h-14 animate-pulse rounded-xl bg-sky-100 dark:bg-slate-800" />
               <div className="h-14 animate-pulse rounded-xl bg-sky-100 dark:bg-slate-800" />
             </div>
-          ) : soldItems.length === 0 ? (
+          ) : activeItems.length === 0 ? (
             <div className="text-center py-8 text-sky-600 dark:text-sky-400 border border-dashed border-sky-200 dark:border-slate-700 rounded-xl bg-sky-50/50 dark:bg-slate-950/50">
-              Belum ada perhitungan penjualan pada periode ini. <br/>
-              <span className="text-xs">(Pastikan ada minimal 2x Kunjungan SO untuk produk yang sama di toko ini).</span>
+              Belum ada aktivitas penjualan/stok pada periode ini. <br/>
+              <span className="text-xs">(Lakukan Kunjungan SO atau input Restock terlebih dahulu).</span>
             </div>
           ) : (
             <>
@@ -192,16 +214,15 @@ export default function DailySalesReport() {
                     <div className="sticky top-[80px] z-10 bg-white/95 dark:bg-slate-900/95 backdrop-blur-sm py-2 mb-3 border-b border-sky-100 dark:border-slate-800">
                       <h4 className="font-bold text-slate-800 dark:text-slate-100 uppercase tracking-wide text-xs flex items-center gap-2">
                         <span className="w-2 h-2 rounded-full bg-sky-500 block"></span>
-                        {new Date(date).toLocaleDateString("id-ID", { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' })}
+                        {formatDateIndo(date)}
                       </h4>
                     </div>
 
-                    {/* List Barang di Tanggal Tersebut (Hasil Gabungan) */}
+                    {/* List Barang */}
                     <ul className="space-y-4">
                       {groupedItems[date].map((item, index) => (
                         <li key={`${item.barcode}-${index}`} className="border border-sky-100 dark:border-slate-800 rounded-xl p-4 shadow-sm bg-white dark:bg-slate-900 hover:border-sky-300 dark:hover:border-sky-700 transition-colors">
                           
-                          {/* Baris Atas: Nama Produk & Angka Terjual */}
                           <div className="flex justify-between items-start mb-3">
                             <div className="pr-2">
                               <p className="text-sm font-bold text-slate-800 dark:text-slate-100">{item.product}</p>
@@ -215,7 +236,6 @@ export default function DailySalesReport() {
                             </div>
                           </div>
 
-                          {/* Baris Bawah: Rincian Hitungan */}
                           <div className="grid grid-cols-3 gap-1 bg-sky-50/50 dark:bg-slate-950 rounded-lg p-2 text-center">
                             <div>
                               <p className="text-[10px] text-slate-500">Stok Awal</p>
@@ -223,7 +243,8 @@ export default function DailySalesReport() {
                             </div>
                             <div className="border-x border-sky-100 dark:border-slate-800">
                               <p className="text-[10px] text-slate-500">Stok Masuk</p>
-                              <p className="text-sm font-semibold text-sky-600">+{item.restockQuantity + item.stockEntryAdjustment}</p>
+                              {/* Tampilkan Restock murni tanpa adjustment yang membingungkan */}
+                              <p className="text-sm font-semibold text-sky-600">+{item.restockQuantity}</p>
                             </div>
                             <div>
                               <p className="text-[10px] text-slate-500">Stok Akhir (SO)</p>
@@ -237,7 +258,7 @@ export default function DailySalesReport() {
                 ))}
               </div>
 
-              {/* TOMBOL PAGINATION LAPORAN (BERDASARKAN TANGGAL) */}
+              {/* TOMBOL PAGINATION */}
               <div className="flex gap-2 mt-6 border-t border-sky-100 dark:border-slate-800 pt-4">
                 {visibleDatesCount > 1 && (
                   <button
