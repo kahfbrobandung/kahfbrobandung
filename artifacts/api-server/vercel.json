@@ -4,21 +4,9 @@
   "framework": null,
   "installCommand": "npx pnpm@9 install --no-frozen-lockfile",
   "buildCommand": "npx pnpm@9 --filter @workspace/api-server run build",
-  "builds": [
-    {
-      "src": "artifacts/api-server/package.json",
-      "use": "@vercel/node"
-    }
-  ],
-  "routes": [
-    {
-      "src": "/(.*)",
-      "dest": "artifacts/api-server/dist/index.mjs"
-    }
-  ],
   "functions": {
     "artifacts/api-server/dist/index.mjs": {
       "maxDuration": 60
     }
   }
-} 
+}
