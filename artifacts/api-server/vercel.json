@@ -8,5 +8,11 @@
     "artifacts/api-server/dist/index.mjs": {
       "maxDuration": 60
     }
-  }
+  },
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "artifacts/api-server/dist/index.mjs"
+    }
+  ]
 }
