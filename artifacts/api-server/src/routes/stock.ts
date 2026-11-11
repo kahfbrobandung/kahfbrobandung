@@ -1,3 +1,4 @@
+// artifacts/api-server/src/routes/stock.ts
 import { and, desc, eq, sql } from "drizzle-orm";
 import { Router, type IRouter } from "express";
 import {
@@ -10,7 +11,6 @@ import {
 } from "@workspace/api-zod";
 import { db, stockEntriesTable, storesTable, type StockEntry } from "@workspace/db";
 import { logger } from "../lib/logger";
-import { reconcileStockLedger } from "../lib/stock-ledger";
 import { syncStockEntryToSpreadsheet } from "../lib/stock-sync";
 import { normalizeStoreName } from "./helpers";
 
@@ -76,6 +76,9 @@ async function updateSyncStatus(entry: StockEntry) {
   }
 }
 
+// ============================================================================
+// GET /stock-entries — Daftar riwayat stok per toko (multi-tenant safe)
+// ============================================================================
 router.get("/stock-entries", async (req, res) => {
   const userId = (req as any).user?.id;
   if (!userId) {
@@ -83,7 +86,8 @@ router.get("/stock-entries", async (req, res) => {
     return;
   }
 
-  const requestedStore = typeof req.query.store === "string" ? req.query.store.trim() : "";
+  const requestedStore =
+    typeof req.query.store === "string" ? req.query.store.trim() : "";
   if (!requestedStore) {
     res.status(400).json({ error: "Nama toko wajib diisi untuk melihat data stok." });
     return;
@@ -109,13 +113,19 @@ router.get("/stock-entries", async (req, res) => {
     .orderBy(
       desc(sql`COALESCE(${stockEntriesTable.occurredAt}, ${stockEntriesTable.createdAt})`),
       desc(stockEntriesTable.createdAt),
-      desc(stockEntriesTable.id),
+      desc(stockEntriesTable.id)
     )
     .limit(parsed.data.limit ?? 25);
 
   res.json(entries.map(responseData));
 });
 
+// ============================================================================
+// DELETE /stock-entries/:id — Hapus entri stok manual/adjustment
+// NOTE: reconcileStockLedger DIHAPUS karena query /stock-balances sudah
+//       menghitung saldo secara on-the-fly dari data mentah. Menghindari
+//       timeout di Vercel (free tier).
+// ============================================================================
 router.delete("/stock-entries/:id", async (req, res): Promise<void> => {
   const userId = (req as any).user?.id;
   if (!userId) {
@@ -136,7 +146,7 @@ router.delete("/stock-entries/:id", async (req, res): Promise<void> => {
       .where(eq(stockEntriesTable.id, parsed.data.id))
       .limit(1);
     if (!entry) return { kind: "missing" as const };
-    
+
     const store = await verifyStoreOwnership(entry.store, userId);
     if (!store) return { kind: "missing" as const };
 
@@ -145,26 +155,33 @@ router.delete("/stock-entries/:id", async (req, res): Promise<void> => {
     }
 
     await tx.delete(stockEntriesTable).where(eq(stockEntriesTable.id, entry.id));
-    await reconcileStockLedger(tx, entry.store, entry.barcode);
+    // reconcileStockLedger(tx, entry.store, entry.barcode);  <-- DISABLED
     return { kind: "deleted" as const, id: entry.id };
   });
+
   if (outcome.kind === "missing") {
     res.status(404).json({ error: "Transaksi stok tidak ditemukan." });
     return;
   }
   if (outcome.kind === "managed") {
-    res.status(409).json({ error: "Transaksi ini dikelola dari riwayat kunjungan atau barang masuk." });
+    res
+      .status(409)
+      .json({ error: "Transaksi ini dikelola dari riwayat kunjungan atau barang masuk." });
     return;
   }
 
-  res.json(DeleteStockEntryResponse.parse({
-    id: outcome.id,
-    spreadsheetMirrorMayRemain: true,
-  }));
+  res.json(
+    DeleteStockEntryResponse.parse({
+      id: outcome.id,
+      spreadsheetMirrorMayRemain: true,
+    })
+  );
 });
 
 // ============================================================================
-// PERBAIKAN TOTAL: LOGIKA STOK SALDO (Kunjungan Terakhir + Pergerakan Setelahnya)
+// GET /stock-balances — Stok saldo on-the-fly
+// Mengambil angka dari kunjungan SO terakhir + menjumlahkan semua
+// pergerakan stok setelahnya. Bebas dari reconcileStockLedger.
 // ============================================================================
 router.get("/stock-balances", async (req, res) => {
   const userId = (req as any).user?.id;
@@ -173,7 +190,8 @@ router.get("/stock-balances", async (req, res) => {
     return;
   }
 
-  const requestedStore = typeof req.query.store === "string" ? req.query.store.trim() : "";
+  const requestedStore =
+    typeof req.query.store === "string" ? req.query.store.trim() : "";
   if (!requestedStore) {
     res.status(400).json({ error: "Nama toko wajib diisi untuk melihat saldo SKU." });
     return;
@@ -191,8 +209,11 @@ router.get("/stock-balances", async (req, res) => {
     return;
   }
 
-  const storeKey = requestedStore.normalize("NFKC").replace(/\s+/g, " ").toLocaleLowerCase("id-ID");
-  
+  const storeKey = requestedStore
+    .normalize("NFKC")
+    .replace(/\s+/g, " ")
+    .toLocaleLowerCase("id-ID");
+
   type LedgerBalanceRow = {
     store: string;
     product: string;
@@ -205,26 +226,25 @@ router.get("/stock-balances", async (req, res) => {
     updatedAt: Date | string;
   };
 
-  // QUERY BARU: Ambil angka dari SO terakhir, lalu hitung selisih pergerakan setelahnya
   const result = await db.execute<LedgerBalanceRow>(sql`
     WITH latest_visits AS (
       SELECT DISTINCT ON (lower(regexp_replace(trim(store), '[[:space:]]+', ' ', 'g')), barcode)
         lower(regexp_replace(trim(store), '[[:space:]]+', ' ', 'g')) AS store_key,
-        store, 
-        product, 
-        barcode, 
-        counted_quantity AS base_quantity, 
+        store,
+        product,
+        barcode,
+        counted_quantity AS base_quantity,
         counted_display_quantity AS base_display_quantity,
         counted_secondary_display_quantity AS base_secondary_display_quantity,
         counted_warehouse_quantity AS base_warehouse_quantity,
         COALESCE(occurred_at, created_at) AS visit_at
       FROM stock_entries
-      WHERE source_type = 'visit_correction' 
+      WHERE source_type = 'visit_correction'
         AND counted_quantity IS NOT NULL
         AND lower(regexp_replace(trim(store), '[[:space:]]+', ' ', 'g')) = ${storeKey}
-      ORDER BY 
-        lower(regexp_replace(trim(store), '[[:space:]]+', ' ', 'g')), 
-        barcode, 
+      ORDER BY
+        lower(regexp_replace(trim(store), '[[:space:]]+', ' ', 'g')),
+        barcode,
         COALESCE(occurred_at, created_at) DESC
     ),
     movements_after_visit AS (
@@ -262,16 +282,16 @@ router.get("/stock-balances", async (req, res) => {
         COUNT(*) AS movement_count,
         MAX(COALESCE(e.occurred_at, e.created_at)) AS last_movement_at
       FROM stock_entries e
-      INNER JOIN latest_visits lv ON 
-        lv.store_key = lower(regexp_replace(trim(e.store), '[[:space:]]+', ' ', 'g')) 
+      INNER JOIN latest_visits lv ON
+        lv.store_key = lower(regexp_replace(trim(e.store), '[[:space:]]+', ' ', 'g'))
         AND lv.barcode = e.barcode
       WHERE lower(regexp_replace(trim(e.store), '[[:space:]]+', ' ', 'g')) = ${storeKey}
         AND COALESCE(e.occurred_at, e.created_at) > lv.visit_at
       GROUP BY lower(regexp_replace(trim(e.store), '[[:space:]]+', ' ', 'g')), e.barcode
     )
-    SELECT 
-      lv.store, 
-      lv.product, 
+    SELECT
+      lv.store,
+      lv.product,
       lv.barcode,
       (lv.base_quantity + COALESCE(m.delta_quantity, 0))::int AS "totalQuantity",
       (lv.base_display_quantity + COALESCE(m.delta_display_quantity, 0))::int AS "displayQuantity",
@@ -294,10 +314,15 @@ router.get("/stock-balances", async (req, res) => {
       warehouseQuantity: Number(row.warehouseQuantity),
       entryCount: Number(row.entryCount),
       updatedAt: new Date(row.updatedAt).toISOString(),
-    })),
+    }))
   );
 });
 
+// ============================================================================
+// POST /stock-entries — Simpan entri stok baru (manual/adjustment)
+// NOTE: reconcileStockLedger DIHAPUS — tidak diperlukan karena /stock-balances
+//       sudah menghitung saldo on-the-fly.
+// ============================================================================
 router.post("/stock-entries", async (req, res) => {
   try {
     const userId = (req as any).user?.id;
@@ -308,33 +333,49 @@ router.post("/stock-entries", async (req, res) => {
 
     const parsed = CreateStockEntryBody.safeParse(req.body);
     if (!parsed.success) {
-      logger.warn({ body: req.body, errors: parsed.error.format() }, "Invalid stock entry payload");
+      logger.warn(
+        { body: req.body, errors: parsed.error.format() },
+        "Invalid stock entry payload"
+      );
       res.status(400).json({
         error: "Data stok tidak valid.",
-        details: parsed.error.errors.map(e => ({ path: e.path.join('.'), message: e.message }))
+        details: parsed.error.errors.map((e) => ({
+          path: e.path.join("."),
+          message: e.message,
+        })),
       });
       return;
     }
 
     const store = await verifyStoreOwnership(parsed.data.store, userId);
     if (!store) {
-      res.status(403).json({ error: "Anda tidak memiliki akses untuk menginput stok di toko ini." });
+      res.status(403).json({
+        error: "Anda tidak memiliki akses untuk menginput stok di toko ini.",
+      });
       return;
     }
 
     const result = await db.transaction(async (tx) => {
       const isKoreksiMinus = parsed.data.transaction.includes("-");
-      
+
       const [created] = await tx
         .insert(stockEntriesTable)
         .values({
           ...parsed.data,
-          quantity: isKoreksiMinus ? -Math.abs(parsed.data.quantity) : Math.abs(parsed.data.quantity),
-          displayQuantity: isKoreksiMinus ? -Math.abs(parsed.data.displayQuantity) : Math.abs(parsed.data.displayQuantity),
-          secondaryDisplayQuantity: isKoreksiMinus ? -Math.abs(parsed.data.secondaryDisplayQuantity) : Math.abs(parsed.data.secondaryDisplayQuantity),
-          warehouseQuantity: isKoreksiMinus ? -Math.abs(parsed.data.warehouseQuantity) : Math.abs(parsed.data.warehouseQuantity),
-          
-          sourceType: parsed.data.sourceType ?? "manual", 
+          quantity: isKoreksiMinus
+            ? -Math.abs(parsed.data.quantity)
+            : Math.abs(parsed.data.quantity),
+          displayQuantity: isKoreksiMinus
+            ? -Math.abs(parsed.data.displayQuantity)
+            : Math.abs(parsed.data.displayQuantity),
+          secondaryDisplayQuantity: isKoreksiMinus
+            ? -Math.abs(parsed.data.secondaryDisplayQuantity)
+            : Math.abs(parsed.data.secondaryDisplayQuantity),
+          warehouseQuantity: isKoreksiMinus
+            ? -Math.abs(parsed.data.warehouseQuantity)
+            : Math.abs(parsed.data.warehouseQuantity),
+
+          sourceType: parsed.data.sourceType ?? "manual",
           sourceId: null,
           occurredAt: new Date(),
           syncStatus: "pending",
@@ -351,12 +392,14 @@ router.post("/stock-entries", async (req, res) => {
         return { entry: existing, created: false };
       }
 
-      await reconcileStockLedger(tx, created.store, created.barcode);
+      // reconcileStockLedger(tx, created.store, created.barcode);  <-- DISABLED
       return { entry: created, created: true };
     });
 
     if (!result.entry) {
-      res.status(500).json({ error: "Data stok gagal disimpan di server (tidak ada entri yang dibuat)." });
+      res.status(500).json({
+        error: "Data stok gagal disimpan di server (tidak ada entri yang dibuat).",
+      });
       return;
     }
 
@@ -367,17 +410,20 @@ router.post("/stock-entries", async (req, res) => {
         logger.error({ err, entryId: result.entry?.id }, "Background sync failed");
       });
     }
-
   } catch (error) {
     logger.error({ err: error, body: req.body }, "Failed to process stock entry");
-    const message = error instanceof Error ? error.message : "Terjadi kesalahan pada server";
-    res.status(500).json({ 
-      error: "Gagal memproses data stok.", 
-      details: message 
+    const message =
+      error instanceof Error ? error.message : "Terjadi kesalahan pada server";
+    res.status(500).json({
+      error: "Gagal memproses data stok.",
+      details: message,
     });
   }
 });
 
+// ============================================================================
+// POST /stock-entries/:id/retry-sync — Ulangi sinkronisasi ke Spreadsheet
+// ============================================================================
 router.post("/stock-entries/:id/retry-sync", async (req, res) => {
   const userId = (req as any).user?.id;
   if (!userId) {
@@ -400,15 +446,17 @@ router.post("/stock-entries/:id/retry-sync", async (req, res) => {
     res.status(404).json({ error: "Data stok tidak ditemukan." });
     return;
   }
-  
+
   const store = await verifyStoreOwnership(entry.store, userId);
   if (!store) {
     res.status(403).json({ error: "Anda tidak memiliki akses ke toko ini." });
     return;
   }
-  
+
   if (entry.sourceType !== "manual" && entry.sourceType !== "adjustment") {
-    res.status(409).json({ error: "Transaksi ini tidak disinkronkan dari input manual." });
+    res.status(409).json({
+      error: "Transaksi ini tidak disinkronkan dari input manual.",
+    });
     return;
   }
 
