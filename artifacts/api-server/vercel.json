@@ -15,5 +15,10 @@
       "src": "/(.*)",
       "dest": "artifacts/api-server/dist/index.mjs"
     }
-  ]
+  ],
+  "functions": {
+    "artifacts/api-server/dist/index.mjs": {
+      "maxDuration": 60
+    }
+  }
 }
