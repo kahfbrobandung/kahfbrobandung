@@ -9,13 +9,13 @@ import DailySalesReport from '@/pages/DailySalesReport';
 import LoginPage from '@/pages/Login';
 import OnboardingPage from '@/pages/Onboarding';
 import ResetPasswordPage from '@/pages/ResetPassword';
-import SubscriptionPage from '@/pages/Subscription'; // <-- TAMBAHAN IMPORT LANGGANAN
-import { supabase } from './supabase'; 
+import SubscriptionPage from '@/pages/Subscription';
+import { supabase } from './supabase';
 import { Route, Switch, Router as WouterRouter, useLocation } from 'wouter';
 import { useHashLocation } from 'wouter/use-hash-location';
-import { setAuthTokenGetter, setBaseUrl, useListStores } from '@workspace/api-client-react';
+import { setAuthTokenGetter, setBaseUrl } from '@workspace/api-client-react';
 
-// 1. Arahkan ke backend Vercel
+// 1. Arahkan ke backend Vercel (Hanya untuk API data, BUKAN untuk cek toko)
 setBaseUrl('https://kahfbrobandung-7qyj.vercel.app');
 
 // 2. Ambil token login dari Supabase secara otomatis
@@ -35,18 +35,15 @@ const queryClient = new QueryClient({
 
 function Router() {
   const [session, setSession] = useState<any>(null);
-  const [loading, setLoading] = useState(true);
+  const [loadingAuth, setLoadingAuth] = useState(true);
+  const [hasStore, setHasStore] = useState<boolean | null>(null);
   const [, setLocation] = useLocation();
 
-  // Cek daftar toko user
-  const storesQuery = useListStores({
-    query: { enabled: !!session }
-  });
-
   useEffect(() => {
+    // 1. Cek Sesi Login
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
-      setLoading(false);
+      setLoadingAuth(false);
     });
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
@@ -56,12 +53,36 @@ function Router() {
     return () => subscription.unsubscribe();
   }, []);
 
-  // Loading awal (mengecek sesi login)
-  if (loading) {
-    return <div className="min-h-screen flex items-center justify-center font-medium">Memuat...</div>;
+  useEffect(() => {
+    // 2. Cek Toko LANGSUNG KE SUPABASE (Bypass Vercel agar cepat & anti-lemot)
+    if (session?.user?.id) {
+      supabase
+        .from('stores')
+        .select('id')
+        .eq('user_id', session.user.id)
+        .limit(1)
+        .then(({ data, error }) => {
+          if (!error) {
+            setHasStore(data && data.length > 0);
+          } else {
+            setHasStore(false); // Jika error, anggap belum punya toko
+          }
+        });
+    } else {
+      setHasStore(null); // Reset jika logout
+    }
+  }, [session]);
+
+  // Tampilan Loading Awal (Cek Sesi)
+  if (loadingAuth) {
+    return (
+      <div className="min-h-screen flex items-center justify-center font-medium bg-slate-50 dark:bg-slate-950">
+        Memuat...
+      </div>
+    );
   }
 
-  // Jika belum login, arahkan ke halaman Login atau Reset Password
+  // Jika Belum Login
   if (!session) {
     return (
       <Switch>
@@ -77,13 +98,17 @@ function Router() {
     );
   }
 
-  // Tampilkan loading saat mengecek toko agar tidak "berkedip"
-  if (storesQuery.isLoading) {
-    return <div className="min-h-screen flex items-center justify-center font-medium text-slate-500">Mengecek data toko...</div>;
+  // Loading Cek Toko (Akan sangat cepat karena langsung ke Supabase)
+  if (hasStore === null) {
+    return (
+      <div className="min-h-screen flex items-center justify-center font-medium text-slate-500 bg-slate-50 dark:bg-slate-950">
+        Memuat data...
+      </div>
+    );
   }
 
-  // Jika sudah login tapi belum punya toko, paksa ke Onboarding
-  if (storesQuery.isSuccess && storesQuery.data?.length === 0) {
+  // Jika User Belum Punya Toko (Paksa ke Onboarding)
+  if (hasStore === false) {
     return (
       <Switch>
         <Route path="/onboarding" component={OnboardingPage} />
@@ -98,13 +123,13 @@ function Router() {
     );
   }
 
-  // Jika sudah punya toko, tampilkan halaman utama
+  // Jika User Sudah Punya Toko (Halaman Utama)
   return (
     <Switch>
       <Route path="/" component={HomePage} />
       <Route path="/operasional" component={OperationsPage} />
       <Route path="/dashboard" component={DailySalesReport} />
-      <Route path="/subscription" component={SubscriptionPage} /> {/* <-- RUTE BARU LANGGANAN */}
+      <Route path="/subscription" component={SubscriptionPage} />
       <Route path="/reset-password" component={ResetPasswordPage} />
       <Route path="/login">
         {() => {
