@@ -11,11 +11,11 @@ import OnboardingPage from '@/pages/Onboarding';
 import ResetPasswordPage from '@/pages/ResetPassword';
 import SubscriptionPage from '@/pages/Subscription';
 import { supabase } from './supabase';
-import { Route, Switch, Router as WouterRouter, useLocation } from 'wouter';
+import { Route, Switch, Router as WouterRouter, Redirect } from 'wouter'; // Tambah Redirect
 import { useHashLocation } from 'wouter/use-hash-location';
 import { setAuthTokenGetter, setBaseUrl } from '@workspace/api-client-react';
 
-// 1. Arahkan ke backend Vercel (Hanya untuk API data, BUKAN untuk cek toko)
+// 1. Arahkan ke backend Vercel
 setBaseUrl('https://kahfbrobandung-7qyj.vercel.app');
 
 // 2. Ambil token login dari Supabase secara otomatis
@@ -29,6 +29,7 @@ const queryClient = new QueryClient({
     queries: {
       staleTime: 5 * 60 * 1000,
       refetchOnWindowFocus: false,
+      retry: 1, // Hanya coba ulang 1x jika API gagal, jangan biarkan loading lama
     },
   },
 });
@@ -37,7 +38,6 @@ function Router() {
   const [session, setSession] = useState<any>(null);
   const [loadingAuth, setLoadingAuth] = useState(true);
   const [hasStore, setHasStore] = useState<boolean | null>(null);
-  const [, setLocation] = useLocation();
 
   useEffect(() => {
     // 1. Cek Sesi Login
@@ -54,18 +54,20 @@ function Router() {
   }, []);
 
   useEffect(() => {
-    // 2. Cek Toko LANGSUNG KE SUPABASE (Bypass Vercel agar cepat & anti-lemot)
+    // 2. Cek Toko LANGSUNG KE SUPABASE
     if (session?.user?.id) {
+      setHasStore(null); // Set loading saat ngecek
       supabase
         .from('stores')
         .select('id')
         .eq('user_id', session.user.id)
         .limit(1)
         .then(({ data, error }) => {
-          if (!error) {
-            setHasStore(data && data.length > 0);
+          if (error) {
+            console.error("Gagal cek toko dari Supabase:", error.message);
+            setHasStore(false); 
           } else {
-            setHasStore(false); // Jika error, anggap belum punya toko
+            setHasStore(data && data.length > 0);
           }
         });
     } else {
@@ -76,8 +78,8 @@ function Router() {
   // Tampilan Loading Awal (Cek Sesi)
   if (loadingAuth) {
     return (
-      <div className="min-h-screen flex items-center justify-center font-medium bg-slate-50 dark:bg-slate-950">
-        Memuat...
+      <div className="min-h-screen flex items-center justify-center font-medium bg-slate-50 dark:bg-slate-950 text-sky-600">
+        Memuat Sesi...
       </div>
     );
   }
@@ -88,21 +90,16 @@ function Router() {
       <Switch>
         <Route path="/login" component={LoginPage} />
         <Route path="/reset-password" component={ResetPasswordPage} />
-        <Route>
-          {() => {
-            setLocation('/login');
-            return null;
-          }}
-        </Route>
+        <Route><Redirect to="/login" /></Route>
       </Switch>
     );
   }
 
-  // Loading Cek Toko (Akan sangat cepat karena langsung ke Supabase)
+  // Loading Cek Toko
   if (hasStore === null) {
     return (
       <div className="min-h-screen flex items-center justify-center font-medium text-slate-500 bg-slate-50 dark:bg-slate-950">
-        Memuat data...
+        Memeriksa Data Toko...
       </div>
     );
   }
@@ -113,12 +110,7 @@ function Router() {
       <Switch>
         <Route path="/onboarding" component={OnboardingPage} />
         <Route path="/reset-password" component={ResetPasswordPage} />
-        <Route>
-          {() => {
-            setLocation('/onboarding');
-            return null;
-          }}
-        </Route>
+        <Route><Redirect to="/onboarding" /></Route>
       </Switch>
     );
   }
@@ -131,12 +123,7 @@ function Router() {
       <Route path="/dashboard" component={DailySalesReport} />
       <Route path="/subscription" component={SubscriptionPage} />
       <Route path="/reset-password" component={ResetPasswordPage} />
-      <Route path="/login">
-        {() => {
-          setLocation('/');
-          return null;
-        }}
-      </Route>
+      <Route path="/login"><Redirect to="/" /></Route>
       <Route component={NotFound} />
     </Switch>
   );
