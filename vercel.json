@@ -2,19 +2,15 @@
   "version": 2,
   "installCommand": "npx pnpm@9 install --no-frozen-lockfile",
   "buildCommand": "npx pnpm@9 --filter @workspace/api-server run build",
-  "builds": [
+  "rewrites": [
     {
-      "src": "artifacts/api-server/dist/index.mjs",
-      "use": "@vercel/node",
-      "config": {
-        "maxDuration": 60
-      }
+      "source": "/(.*)",
+      "destination": "/api/index"
     }
   ],
-  "routes": [
-    {
-      "src": "/(.*)",
-      "dest": "artifacts/api-server/dist/index.mjs"
+  "functions": {
+    "api/index.ts": {
+      "maxDuration": 60
     }
-  ]
+  }
 }
