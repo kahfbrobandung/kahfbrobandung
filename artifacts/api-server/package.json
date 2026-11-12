@@ -5,7 +5,7 @@
   "type": "module",
   "main": "dist/index.mjs",
   "engines": {
-    "node": "20.x"
+    "node": "22.x"
   },
   "scripts": {
     "dev": "export NODE_ENV=development && pnpm run build && pnpm run start",
