@@ -1,18 +1,18 @@
 {
-  "$schema": "https://openapi.vercel.sh/vercel.json",
   "version": 2,
   "framework": null,
   "installCommand": "npx pnpm@9 install --no-frozen-lockfile",
   "buildCommand": "npx pnpm@9 --filter @workspace/api-server run build",
-  "functions": {
-    "dist/index.mjs": {
-      "maxDuration": 60
+  "builds": [
+    {
+      "src": "artifacts/api-server/package.json",
+      "use": "@vercel/node"
     }
-  },
+  ],
   "routes": [
     {
       "src": "/(.*)",
-      "dest": "dist/index.mjs"
+      "dest": "artifacts/api-server/dist/index.mjs"
     }
   ]
 }
