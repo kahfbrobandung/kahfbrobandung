@@ -5,14 +5,14 @@
   "installCommand": "npx pnpm@9 install --no-frozen-lockfile",
   "buildCommand": "npx pnpm@9 --filter @workspace/api-server run build",
   "functions": {
-    "artifacts/api-server/dist/index.mjs": {
+    "dist/index.mjs": {
       "maxDuration": 60
     }
   },
   "routes": [
     {
       "src": "/(.*)",
-      "dest": "artifacts/api-server/dist/index.mjs"
+      "dest": "dist/index.mjs"
     }
   ]
 }
