@@ -78,6 +78,11 @@ app.use(
   }),
 );
 
+// ==========================================
+// TAMBAHAN BARU: Root Check (Agar 404 hilang)
+// ==========================================
+app.get("/", (req, res) => res.json({ status: "ok" }));
+
 // 5. Health check — FIX #7: SEBELUM limiter & auth
 // agar uptime monitor tidak kena rate limit / 401
 app.get("/api/health", (req, res) => res.json({ status: "ok" }));
