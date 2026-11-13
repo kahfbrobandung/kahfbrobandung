@@ -1,10 +1,4 @@
 {
   "version": 2,
-  "rootDirectory": "artifacts/api-server",
-  "rewrites": [
-    {
-      "source": "/(.*)",
-      "destination": "/dist/index.mjs"
-    }
-  ]
+  "installCommand": "npx pnpm@9 install --no-frozen-lockfile"
 }
