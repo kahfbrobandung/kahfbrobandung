@@ -1,14 +1,9 @@
 {
   "version": 2,
-  "functions": {
-    "dist/index.mjs": {
-      "runtime": "@vercel/node@3.0.0"
-    }
-  },
   "rewrites": [
     {
       "source": "/(.*)",
-      "destination": "/dist/index.mjs"
+      "destination": "/api/index.mjs"
     }
   ]
 }
