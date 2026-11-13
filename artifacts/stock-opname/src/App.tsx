@@ -11,12 +11,12 @@ import OnboardingPage from '@/pages/Onboarding';
 import ResetPasswordPage from '@/pages/ResetPassword';
 import SubscriptionPage from '@/pages/Subscription';
 import { supabase } from './supabase';
-import { Route, Switch, Router as WouterRouter, Redirect } from 'wouter'; // Tambah Redirect
+import { Route, Switch, Router as WouterRouter, Redirect } from 'wouter';
 import { useHashLocation } from 'wouter/use-hash-location';
 import { setAuthTokenGetter, setBaseUrl } from '@workspace/api-client-react';
 
-// 1. Arahkan ke backend Vercel
-setBaseUrl('https://kahfbrobandung-7qyj.vercel.app');
+// 1. Arahkan ke backend Vercel (Gunakan env var untuk fleksibilitas)
+setBaseUrl(import.meta.env.VITE_API_BASE_URL || 'https://kahfbrobandung-7qyj.vercel.app');
 
 // 2. Ambil token login dari Supabase secara otomatis
 setAuthTokenGetter(async () => {
@@ -29,7 +29,7 @@ const queryClient = new QueryClient({
     queries: {
       staleTime: 5 * 60 * 1000,
       refetchOnWindowFocus: false,
-      retry: 1, // Hanya coba ulang 1x jika API gagal, jangan biarkan loading lama
+      retry: 1, 
     },
   },
 });
@@ -56,7 +56,7 @@ function Router() {
   useEffect(() => {
     // 2. Cek Toko LANGSUNG KE SUPABASE
     if (session?.user?.id) {
-      setHasStore(null); // Set loading saat ngecek
+      setHasStore(null); 
       supabase
         .from('stores')
         .select('id')
@@ -71,7 +71,7 @@ function Router() {
           }
         });
     } else {
-      setHasStore(null); // Reset jika logout
+      setHasStore(null); 
     }
   }, [session]);
 
