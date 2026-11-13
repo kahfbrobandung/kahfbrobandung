@@ -1,5 +1,8 @@
 {
   "version": 2,
+  "installCommand": "npx pnpm@9 install --no-frozen-lockfile",
+  "buildCommand": "npx pnpm@9 run build",
+  "outputDirectory": "dist",
   "builds": [
     {
       "src": "dist/index.mjs",
