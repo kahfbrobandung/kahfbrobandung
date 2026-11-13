@@ -1,17 +1,8 @@
 import { Router, type IRouter, type Request, type Response } from "express";
-// ⚠️ SESUAIKAN path import client Supabase dengan project Anda.
-//    Cek: file store-sales.ts / report.ts pakai import dari mana.
-import { supabaseAdmin } from "../lib/supabase";
-// ⚠️ SESUAIKAN nama middleware auth dengan project Anda.
-//    Kalau project Anda export-nya default, ubah jadi:
-//    import requireAuth from "../middlewares/auth";
-import { requireAuth } from "../middlewares/auth";
+import { requireAuth, supabaseAdmin } from "../middlewares/auth";
 
 const router: IRouter = Router();
 
-// ===========================================================================
-// HELPER — Standar response JSON agar konsisten di semua endpoint
-// ===========================================================================
 function ok<T>(res: Response, data: T, status = 200) {
   return res.status(status).json({ success: true, data });
 }
@@ -24,19 +15,12 @@ function fail(res: Response, message: string, status = 500, detail?: unknown) {
   });
 }
 
-// ===========================================================================
 // GET /api/stock-entries
-// Query params opsional:
-//   - store_id  (uuid)
-//   - limit     (number, default 50, max 200)
-//   - offset    (number, default 0)
-// ===========================================================================
 router.get("/api/stock-entries", requireAuth, async (req: Request, res: Response) => {
   try {
     const storeId = typeof req.query.store_id === "string" ? req.query.store_id : undefined;
     const limitRaw = Number(req.query.limit ?? 50);
     const offsetRaw = Number(req.query.offset ?? 0);
-
     const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 200) : 50;
     const offset = Number.isFinite(offsetRaw) ? Math.max(offsetRaw, 0) : 0;
 
@@ -62,21 +46,11 @@ router.get("/api/stock-entries", requireAuth, async (req: Request, res: Response
   }
 });
 
-// ===========================================================================
 // POST /api/stock-entries
-// Body:
-//   {
-//     store_id: string (uuid),
-//     product_id: string (uuid),
-//     quantity: number,
-//     notes?: string
-//   }
-// ===========================================================================
 router.post("/api/stock-entries", requireAuth, async (req: Request, res: Response) => {
   try {
     const { store_id, product_id, quantity, notes } = req.body ?? {};
 
-    // --- Validasi input ---
     if (!store_id || typeof store_id !== "string") {
       return fail(res, "store_id wajib diisi dan berupa string.", 400);
     }
@@ -90,18 +64,9 @@ router.post("/api/stock-entries", requireAuth, async (req: Request, res: Respons
       return fail(res, "notes harus berupa string.", 400);
     }
 
-    // --- Insert ---
     const { data, error } = await supabaseAdmin
       .from("stock_entries")
-      .insert({
-        store_id,
-        product_id,
-        quantity,
-        notes: notes ?? null,
-        // ⚠️ SESUAIKAN: kalau tabel Anda punya kolom created_by,
-        //    aktifkan baris di bawah (req.user.id menyesuaikan middleware auth).
-        // created_by: (req as any).user?.id ?? null,
-      })
+      .insert({ store_id, product_id, quantity, notes: notes ?? null })
       .select()
       .single();
 
@@ -117,19 +82,12 @@ router.post("/api/stock-entries", requireAuth, async (req: Request, res: Respons
   }
 });
 
-// ===========================================================================
 // GET /api/stock-balances
-// Query params opsional:
-//   - store_id (uuid)
-//   - limit    (default 50, max 200)
-//   - offset   (default 0)
-// ===========================================================================
 router.get("/api/stock-balances", requireAuth, async (req: Request, res: Response) => {
   try {
     const storeId = typeof req.query.store_id === "string" ? req.query.store_id : undefined;
     const limitRaw = Number(req.query.limit ?? 50);
     const offsetRaw = Number(req.query.offset ?? 0);
-
     const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 200) : 50;
     const offset = Number.isFinite(offsetRaw) ? Math.max(offsetRaw, 0) : 0;
 
@@ -155,10 +113,7 @@ router.get("/api/stock-balances", requireAuth, async (req: Request, res: Respons
   }
 });
 
-// ===========================================================================
 // GET /api/stock-balances/:store_id/:product_id
-// Ambil 1 balance spesifik (kalau ada)
-// ===========================================================================
 router.get(
   "/api/stock-balances/:store_id/:product_id",
   requireAuth,
