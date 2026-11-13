@@ -1,12 +1,10 @@
 {
   "version": 2,
   "installCommand": "npx pnpm@9 install --no-frozen-lockfile",
-  "buildCommand": "pnpm --filter @workspace/api-server --if-present run build",
-  "outputDirectory": "artifacts/api-server/dist",
   "rewrites": [
     {
       "source": "/(.*)",
-      "destination": "/index.mjs"
+      "destination": "/api/index"
     }
   ]
 }
