@@ -3,8 +3,8 @@ import { requireAuth, supabaseAdmin } from "../middlewares/auth";
 
 const router: IRouter = Router();
 
-// GET /api/stock-entries
-router.get("/api/stock-entries", requireAuth, async (req: Request, res: Response) => {
+// GET /stock-entries (tanpa /api di depan)
+router.get("/stock-entries", requireAuth, async (req: Request, res: Response) => {
   try {
     const store = typeof req.query.store === "string" ? req.query.store : undefined;
     const limitRaw = Number(req.query.limit ?? 50);
@@ -27,8 +27,8 @@ router.get("/api/stock-entries", requireAuth, async (req: Request, res: Response
   }
 });
 
-// POST /api/stock-entries (Menerima semua data dari Home.tsx)
-router.post("/api/stock-entries", requireAuth, async (req: Request, res: Response) => {
+// POST /stock-entries (tanpa /api di depan)
+router.post("/stock-entries", requireAuth, async (req: Request, res: Response) => {
   try {
     const { 
       store, transaction, product, quantity, clientId, 
@@ -63,19 +63,17 @@ router.post("/api/stock-entries", requireAuth, async (req: Request, res: Respons
   }
 });
 
-// GET /api/stock-balances (Menghitung otomatis dari stock_entries)
-router.get("/api/stock-balances", requireAuth, async (req: Request, res: Response) => {
+// GET /stock-balances (tanpa /api di depan)
+router.get("/stock-balances", requireAuth, async (req: Request, res: Response) => {
   try {
     const store = typeof req.query.store === "string" ? req.query.store : undefined;
     
-    // Ambil semua riwayat transaksi untuk toko ini
     let query = supabaseAdmin.from("stock_entries").select("*").order("id", { ascending: true }).limit(5000);
     if (store) query = query.eq("store", store);
     
     const { data, error } = await query;
     if (error) return res.status(500).json({ error: error.message });
     
-    // Kalkulasi total stok per produk
     const balancesMap = new Map();
     for (const row of data ?? []) {
       const key = `${row.store}-${row.barcode || row.product}`;
@@ -90,7 +88,6 @@ router.get("/api/stock-balances", requireAuth, async (req: Request, res: Respons
       const item = balancesMap.get(key);
       const qty = row.quantity || 0;
       
-      // Logika: Penjualan, Koreksi -, dan Retur mengurangi stok. Sisanya menambah.
       if (row.transaction === 'Penjualan' || row.transaction === 'Koreksi Stok -' || row.transaction === 'Retur') {
         item.totalQuantity -= qty;
       } else {
@@ -99,8 +96,6 @@ router.get("/api/stock-balances", requireAuth, async (req: Request, res: Respons
     }
     
     const balances = Array.from(balancesMap.values());
-    
-    // Kembalikan dalam bentuk array karena useListStockBalances di frontend mengharapkan array
     return res.json(balances);
   } catch (err: any) {
     return res.status(500).json({ error: "Gagal mengambil data saldo.", detail: err.message });
