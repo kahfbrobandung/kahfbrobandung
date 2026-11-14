@@ -1,5 +1,17 @@
 {
   "version": 2,
   "installCommand": "npx pnpm@9 install --no-frozen-lockfile",
-  "buildCommand": "npx pnpm@9 run build"
+  "buildCommand": "npx pnpm@9 run build",
+  "builds": [
+    {
+      "src": "api/index.js",
+      "use": "@vercel/node"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "api/index.js"
+    }
+  ]
 }
