@@ -64,7 +64,7 @@ router.post("/stock-entries", requireAuth, async (req: Request, res: Response) =
 });
 
 // GET /stock-balances (SEMENTARA TANPA requireAuth UNTUK TES)
-router.get("/stock-balances", async (req: Request, res: Response) => { // <--- requireAuth DIHAPUS
+router.get("/stock-balances", async (req: Request, res: Response) => {
   try {
     const store = typeof req.query.store === "string" ? req.query.store : undefined;
     
@@ -110,4 +110,4 @@ router.get("/stock-balances", async (req: Request, res: Response) => { // <--- r
   }
 });
 
-export default router;
+export default router; // <--- INI BARIS YANG TADI HILANG
