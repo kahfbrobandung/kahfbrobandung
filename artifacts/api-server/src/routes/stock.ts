@@ -63,7 +63,7 @@ router.post("/stock-entries", requireAuth, async (req: Request, res: Response) =
   }
 });
 
-// GET /stock-balances (SEMENTARA TANPA requireAuth UNTUK TES)
+// GET /stock-balances
 router.get("/stock-balances", async (req: Request, res: Response) => {
   try {
     const store = typeof req.query.store === "string" ? req.query.store : undefined;
@@ -104,10 +104,12 @@ router.get("/stock-balances", async (req: Request, res: Response) => {
     }
     
     const balances = Array.from(balancesMap.values());
-    return res.json({ success: true, data: { balances } });
+    
+    // KEMBALIKAN ARRAY MURNI (Tanpa bungkusan)
+    return res.json(balances); 
   } catch (err: any) {
     return res.status(500).json({ error: "Gagal mengambil data saldo.", detail: err.message });
   }
 });
 
-export default router; // <--- INI BARIS YANG TADI HILANG
+export default router;
