@@ -19,23 +19,21 @@ router.get("/api/stock-entries", requireAuth, async (req: Request, res: Response
     if (store) query = query.eq("store", store);
 
     const { data, error, count } = await query;
-
-    if (error) {
-      console.error("[stock-entries] error:", error);
-      return res.status(500).json({ error: "Gagal mengambil data.", detail: error.message });
-    }
+    if (error) return res.status(500).json({ error: error.message });
 
     return res.json({ success: true, data: { entries: data ?? [], total: count ?? 0, limit } });
   } catch (err) {
-    console.error("[stock-entries] unexpected:", err);
     return res.status(500).json({ error: "Terjadi kesalahan pada server." });
   }
 });
 
-// POST /api/stock-entries
+// POST /api/stock-entries (Menerima semua data dari Home.tsx)
 router.post("/api/stock-entries", requireAuth, async (req: Request, res: Response) => {
   try {
-    const { store, transaction, product, quantity, client_id } = req.body ?? {};
+    const { 
+      store, transaction, product, quantity, clientId, 
+      barcode, displayQuantity, secondaryDisplayQuantity, warehouseQuantity 
+    } = req.body ?? {};
 
     if (!store || !product || typeof quantity !== "number") {
       return res.status(400).json({ error: "store, product, dan quantity wajib diisi." });
@@ -48,38 +46,63 @@ router.post("/api/stock-entries", requireAuth, async (req: Request, res: Respons
         transaction: transaction ?? "Input Stok",
         product,
         quantity,
-        client_id: client_id ?? crypto.randomUUID(),
+        client_id: clientId ?? globalThis.crypto?.randomUUID(),
+        barcode: barcode ?? null,
+        display_quantity: displayQuantity ?? 0,
+        secondary_display_quantity: secondaryDisplayQuantity ?? 0,
+        warehouse_quantity: warehouseQuantity ?? 0,
       })
       .select()
       .single();
 
-    if (error) {
-      console.error("[stock-entries POST] error:", error);
-      return res.status(500).json({ error: "Gagal menyimpan.", detail: error.message });
-    }
+    if (error) return res.status(500).json({ error: error.message });
 
     return res.status(201).json({ success: true, data });
   } catch (err) {
-    console.error("[stock-entries POST] unexpected:", err);
     return res.status(500).json({ error: "Terjadi kesalahan pada server." });
   }
 });
 
-// GET /api/stock-balances (Dialihkan ke stock_entries agar UI tidak kosong)
+// GET /api/stock-balances (Menghitung otomatis dari stock_entries)
 router.get("/api/stock-balances", requireAuth, async (req: Request, res: Response) => {
   try {
     const store = typeof req.query.store === "string" ? req.query.store : undefined;
     
-    // Karena tabel stock_balances tidak ada, kita ambil dari stock_entries
-    let query = supabaseAdmin.from("stock_entries").select("*").order("id", { ascending: false }).limit(100);
+    // Ambil semua riwayat transaksi untuk toko ini
+    let query = supabaseAdmin.from("stock_entries").select("*").order("id", { ascending: true }).limit(5000);
     if (store) query = query.eq("store", store);
     
     const { data, error } = await query;
-    if (error) throw error;
+    if (error) return res.status(500).json({ error: error.message });
     
-    return res.json({ success: true, data: { balances: data ?? [] } });
+    // Kalkulasi total stok per produk
+    const balancesMap = new Map();
+    for (const row of data ?? []) {
+      const key = `${row.store}-${row.barcode || row.product}`;
+      if (!balancesMap.has(key)) {
+        balancesMap.set(key, {
+          store: row.store,
+          product: row.product,
+          barcode: row.barcode || "-",
+          totalQuantity: 0
+        });
+      }
+      const item = balancesMap.get(key);
+      const qty = row.quantity || 0;
+      
+      // Logika: Penjualan, Koreksi -, dan Retur mengurangi stok. Sisanya menambah.
+      if (row.transaction === 'Penjualan' || row.transaction === 'Koreksi Stok -' || row.transaction === 'Retur') {
+        item.totalQuantity -= qty;
+      } else {
+        item.totalQuantity += qty;
+      }
+    }
+    
+    const balances = Array.from(balancesMap.values());
+    
+    // Kembalikan dalam bentuk array karena useListStockBalances di frontend mengharapkan array
+    return res.json(balances);
   } catch (err: any) {
-    console.error("[stock-balances] error:", err);
     return res.status(500).json({ error: "Gagal mengambil data saldo.", detail: err.message });
   }
 });
