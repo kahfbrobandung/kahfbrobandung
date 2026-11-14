@@ -3,7 +3,7 @@ import { requireAuth, supabaseAdmin } from "../middlewares/auth";
 
 const router: IRouter = Router();
 
-// GET /stock-entries (tanpa /api di depan)
+// GET /stock-entries
 router.get("/stock-entries", requireAuth, async (req: Request, res: Response) => {
   try {
     const store = typeof req.query.store === "string" ? req.query.store : undefined;
@@ -27,7 +27,7 @@ router.get("/stock-entries", requireAuth, async (req: Request, res: Response) =>
   }
 });
 
-// POST /stock-entries (tanpa /api di depan)
+// POST /stock-entries
 router.post("/stock-entries", requireAuth, async (req: Request, res: Response) => {
   try {
     const { 
@@ -63,20 +63,24 @@ router.post("/stock-entries", requireAuth, async (req: Request, res: Response) =
   }
 });
 
-// GET /stock-balances (tanpa /api di depan)
+// GET /stock-balances (Kalkulasi Stok)
 router.get("/stock-balances", requireAuth, async (req: Request, res: Response) => {
   try {
     const store = typeof req.query.store === "string" ? req.query.store : undefined;
     
     let query = supabaseAdmin.from("stock_entries").select("*").order("id", { ascending: true }).limit(5000);
-    if (store) query = query.eq("store", store);
+    
+    // Cek store dan pastikan tidak ada spasi tersembunyi
+    if (store && store.trim() !== "") {
+      query = query.eq("store", store.trim());
+    }
     
     const { data, error } = await query;
     if (error) return res.status(500).json({ error: error.message });
     
     const balancesMap = new Map();
     for (const row of data ?? []) {
-      const key = `${row.store}-${row.barcode || row.product}`;
+      const key = `${row.store}-${row.product}`;
       if (!balancesMap.has(key)) {
         balancesMap.set(key, {
           store: row.store,
@@ -86,8 +90,9 @@ router.get("/stock-balances", requireAuth, async (req: Request, res: Response) =
         });
       }
       const item = balancesMap.get(key);
-      const qty = row.quantity || 0;
+      const qty = Number(row.quantity) || 0; // Paksa jadi angka
       
+      // Kalkulasi kurangi jika penjualan/koreksi minus
       if (row.transaction === 'Penjualan' || row.transaction === 'Koreksi Stok -' || row.transaction === 'Retur') {
         item.totalQuantity -= qty;
       } else {
@@ -96,6 +101,8 @@ router.get("/stock-balances", requireAuth, async (req: Request, res: Response) =
     }
     
     const balances = Array.from(balancesMap.values());
+    
+    // Kembalikan dalam bentuk Array murni
     return res.json(balances);
   } catch (err: any) {
     return res.status(500).json({ error: "Gagal mengambil data saldo.", detail: err.message });
