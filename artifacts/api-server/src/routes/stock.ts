@@ -63,20 +63,30 @@ router.post("/stock-entries", requireAuth, async (req: Request, res: Response) =
   }
 });
 
-// GET /stock-balances (Kalkulasi Stok)
+// GET /stock-balances (DENGAN CCTV / LOGS)
 router.get("/stock-balances", requireAuth, async (req: Request, res: Response) => {
   try {
     const store = typeof req.query.store === "string" ? req.query.store : undefined;
     
+    // CCTV 1: Cek apakah API menerima nama toko dari aplikasi
+    console.log("=== API STOCK BALANCES DIPANGGIL ===");
+    console.log("Nama Toko yang diterima:", store);
+
     let query = supabaseAdmin.from("stock_entries").select("*").order("id", { ascending: true }).limit(5000);
     
-    // Cek store dan pastikan tidak ada spasi tersembunyi
     if (store && store.trim() !== "") {
       query = query.eq("store", store.trim());
     }
     
     const { data, error } = await query;
-    if (error) return res.status(500).json({ error: error.message });
+    
+    // CCTV 2: Cek apakah Supabase mengembalikan data
+    console.log("Jumlah baris data dari Supabase:", data?.length);
+
+    if (error) {
+      console.error("Supabase Error:", error);
+      return res.status(500).json({ error: error.message });
+    }
     
     const balancesMap = new Map();
     for (const row of data ?? []) {
@@ -90,9 +100,8 @@ router.get("/stock-balances", requireAuth, async (req: Request, res: Response) =
         });
       }
       const item = balancesMap.get(key);
-      const qty = Number(row.quantity) || 0; // Paksa jadi angka
+      const qty = Number(row.quantity) || 0;
       
-      // Kalkulasi kurangi jika penjualan/koreksi minus
       if (row.transaction === 'Penjualan' || row.transaction === 'Koreksi Stok -' || row.transaction === 'Retur') {
         item.totalQuantity -= qty;
       } else {
@@ -102,9 +111,13 @@ router.get("/stock-balances", requireAuth, async (req: Request, res: Response) =
     
     const balances = Array.from(balancesMap.values());
     
-    // Kembalikan dalam bentuk Array murni
+    // CCTV 3: Cek hasil akhir kalkulasi
+    console.log("Hasil akhir (jumlah produk):", balances.length);
+    console.log("Data yang dikirim ke aplikasi:", JSON.stringify(balances));
+
     return res.json(balances);
   } catch (err: any) {
+    console.error("Catch Error:", err);
     return res.status(500).json({ error: "Gagal mengambil data saldo.", detail: err.message });
   }
 });
