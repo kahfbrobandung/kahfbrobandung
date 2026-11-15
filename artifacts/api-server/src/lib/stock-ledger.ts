@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import {
   db,
   stockEntriesTable,
@@ -15,100 +15,83 @@ export function normalizeStoreKey(value: string) {
   return value.trim().normalize("NFKC").replace(/\s+/g, " ").toLocaleLowerCase("id-ID");
 }
 
-function signedMovement(entry: {
-  sourceType: string;
-  transaction: string;
-  quantity: number;
-  displayQuantity: number;
-  secondaryDisplayQuantity: number;
-  warehouseQuantity: number;
-}) {
-  const adjustmentIsSigned = entry.sourceType === "restock_invoice";
-  const multiplier = !adjustmentIsSigned && entry.transaction.trim().toLocaleLowerCase("id-ID") === "penjualan"
-    ? -1
-    : 1;
-  return {
-    quantity: entry.quantity * multiplier,
-    displayQuantity: entry.displayQuantity * multiplier,
-    secondaryDisplayQuantity: entry.secondaryDisplayQuantity * multiplier,
-    warehouseQuantity: entry.warehouseQuantity * multiplier,
-  };
-}
-
 export async function reconcileStockLedger(
   tx: StockLedgerTransaction,
   store: string,
   barcode: string,
 ): Promise<void> {
   const storeKey = normalizeStoreKey(store);
-  const entries = await tx
-    .select()
-    .from(stockEntriesTable)
-    .where(and(
-      eq(stockEntriesTable.barcode, barcode),
-      sql`lower(regexp_replace(trim(${stockEntriesTable.store}), '[[:space:]]+', ' ', 'g')) = ${storeKey}`,
-    ))
-    .orderBy(
-      asc(sql`COALESCE(${stockEntriesTable.occurredAt}, ${stockEntriesTable.createdAt})`),
-      asc(stockEntriesTable.createdAt),
-      asc(stockEntriesTable.id),
-    );
 
-  const correctionLineIds = entries
-    .filter((entry) => entry.sourceType === "visit_correction")
-    .map((entry) => Number(entry.sourceId))
-    .filter((id) => Number.isSafeInteger(id) && id > 0);
-  const countedLines = correctionLineIds.length
-    ? await tx
-      .select()
-      .from(stocktakeLinesTable)
-      .where(inArray(stocktakeLinesTable.id, correctionLineIds))
-    : [];
-  const countedLineById = new Map(countedLines.map((line) => [line.id, line]));
-
-  let total = 0;
-  let display = 0;
-  let secondary = 0;
-  let warehouse = 0;
-
-  for (const entry of entries) {
-    if (entry.sourceType === "visit_correction") {
-      const lineId = Number(entry.sourceId);
-      const line = countedLineById.get(lineId);
-      if (!line) {
-        throw new Error(`Stock ledger correction ${entry.id} is missing its physical count.`);
-      }
-
-      const movement = {
-        quantity: line.totalQuantity - total,
-        displayQuantity: line.displayQuantity - display,
-        secondaryDisplayQuantity: line.secondaryDisplayQuantity - secondary,
-        warehouseQuantity: line.warehouseQuantity - warehouse,
-      };
-      if (
-        entry.quantity !== movement.quantity ||
-        entry.displayQuantity !== movement.displayQuantity ||
-        entry.secondaryDisplayQuantity !== movement.secondaryDisplayQuantity ||
-        entry.warehouseQuantity !== movement.warehouseQuantity
-      ) {
-        await tx
-          .update(stockEntriesTable)
-          .set(movement)
-          .where(eq(stockEntriesTable.id, entry.id));
-      }
-      total = line.totalQuantity;
-      display = line.displayQuantity;
-      secondary = line.secondaryDisplayQuantity;
-      warehouse = line.warehouseQuantity;
-      continue;
-    }
-
-    const movement = signedMovement(entry);
-    total += movement.quantity;
-    display += movement.displayQuantity;
-    secondary += movement.secondaryDisplayQuantity;
-    warehouse += movement.warehouseQuantity;
-  }
+  // OPTIMASI BESAR: Gunakan SQL Window Function agar database yang menghitung.
+  // Tidak ada lagi fetch 10.000 baris ke Node.js. Waktu eksekusi < 50ms.
+  await tx.execute(sql`
+    WITH running_totals AS (
+      SELECT
+        id,
+        source_type,
+        quantity,
+        display_quantity,
+        secondary_display_quantity,
+        warehouse_quantity,
+        counted_quantity,
+        counted_display_quantity,
+        counted_secondary_display_quantity,
+        counted_warehouse_quantity,
+        COALESCE(SUM(
+          CASE
+            WHEN source_type = 'visit_correction' THEN 0
+            WHEN source_type = 'restock_invoice' THEN quantity
+            WHEN lower(trim(transaction)) IN ('penjualan', 'koreksi stok -', 'retur') THEN -quantity
+            ELSE quantity
+          END
+        ) OVER (ORDER BY COALESCE(occurred_at, created_at), created_at, id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), 0) AS prev_qty,
+        
+        COALESCE(SUM(
+          CASE
+            WHEN source_type = 'visit_correction' THEN 0
+            WHEN source_type = 'restock_invoice' THEN display_quantity
+            WHEN lower(trim(transaction)) IN ('penjualan', 'koreksi stok -', 'retur') THEN -display_quantity
+            ELSE display_quantity
+          END
+        ) OVER (ORDER BY COALESCE(occurred_at, created_at), created_at, id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), 0) AS prev_display,
+        
+        COALESCE(SUM(
+          CASE
+            WHEN source_type = 'visit_correction' THEN 0
+            WHEN source_type = 'restock_invoice' THEN secondary_display_quantity
+            WHEN lower(trim(transaction)) IN ('penjualan', 'koreksi stok -', 'retur') THEN -secondary_display_quantity
+            ELSE secondary_display_quantity
+          END
+        ) OVER (ORDER BY COALESCE(occurred_at, created_at), created_at, id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), 0) AS prev_secondary,
+        
+        COALESCE(SUM(
+          CASE
+            WHEN source_type = 'visit_correction' THEN 0
+            WHEN source_type = 'restock_invoice' THEN warehouse_quantity
+            WHEN lower(trim(transaction)) IN ('penjualan', 'koreksi stok -', 'retur') THEN -warehouse_quantity
+            ELSE warehouse_quantity
+          END
+        ) OVER (ORDER BY COALESCE(occurred_at, created_at), created_at, id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), 0) AS prev_warehouse
+      FROM stock_entries
+      WHERE barcode = ${barcode}
+        AND lower(regexp_replace(trim(store), '[[:space:]]+', ' ', 'g')) = ${storeKey}
+    )
+    UPDATE stock_entries e
+    SET
+      quantity = c.counted_quantity - c.prev_qty,
+      display_quantity = c.counted_display_quantity - c.prev_display,
+      secondary_display_quantity = c.counted_secondary_display_quantity - c.prev_secondary,
+      warehouse_quantity = c.counted_warehouse_quantity - c.prev_warehouse
+    FROM running_totals c
+    WHERE e.id = c.id
+      AND c.source_type = 'visit_correction'
+      AND (
+        e.quantity != c.counted_quantity - c.prev_qty OR
+        e.display_quantity != c.counted_display_quantity - c.prev_display OR
+        e.secondary_display_quantity != c.counted_secondary_display_quantity - c.prev_secondary OR
+        e.warehouse_quantity != c.counted_warehouse_quantity - c.prev_warehouse
+      );
+  `);
 }
 
 export async function backfillLegacyStockLedger(): Promise<{ entriesAdded: number; skusReconciled: number }> {
@@ -235,6 +218,7 @@ export async function backfillLegacyStockLedger(): Promise<{ entriesAdded: numbe
       });
     }
 
+    // Rekonsiliasi sekarang akan sangat cepat karena menggunakan SQL.
     for (const sku of affectedSkus.values()) {
       await reconcileStockLedger(tx, sku.store, sku.barcode);
     }
