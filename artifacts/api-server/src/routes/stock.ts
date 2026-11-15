@@ -4,10 +4,6 @@ import { logger } from "../lib/logger";
 
 const router: IRouter = Router();
 
-// Transaksi yang MENGURANGI stok
-const NEGATIVE_TX = new Set(["Penjualan", "Koreksi Stok -", "Retur"]);
-
-// Helper validasi
 const isNonEmptyString = (v: unknown): v is string =>
   typeof v === "string" && v.trim().length > 0;
 
@@ -15,7 +11,7 @@ const toNumber = (v: unknown, fallback = 0) =>
   typeof v === "number" && Number.isFinite(v) ? v : fallback;
 
 // =========================================================================
-// GET /stock-entries
+// GET /stock-entries (Tetap sama)
 // =========================================================================
 router.get("/stock-entries", requireAuth, async (req, res) => {
   try {
@@ -54,7 +50,7 @@ router.get("/stock-entries", requireAuth, async (req, res) => {
 });
 
 // =========================================================================
-// POST /stock-entries
+// POST /stock-entries (Tetap sama)
 // =========================================================================
 router.post("/stock-entries", requireAuth, async (req, res) => {
   try {
@@ -70,7 +66,6 @@ router.post("/stock-entries", requireAuth, async (req, res) => {
       warehouseQuantity,
     } = req.body ?? {};
 
-    // Validasi ketat
     if (!isNonEmptyString(store) || !isNonEmptyString(product)) {
       return res.status(400).json({ error: "store dan product wajib diisi." });
     }
@@ -103,10 +98,7 @@ router.post("/stock-entries", requireAuth, async (req, res) => {
       .single();
 
     if (error) {
-      logger.error(
-        { err: error, store, product },
-        "POST /stock-entries failed"
-      );
+      logger.error({ err: error, store, product }, "POST /stock-entries failed");
       return res.status(500).json({ error: "Gagal menyimpan data stok." });
     }
 
@@ -118,73 +110,34 @@ router.post("/stock-entries", requireAuth, async (req, res) => {
 });
 
 // =========================================================================
-// GET /stock-balances
-//   🔴 FIX: requireAuth ditambahkan
-//   🔴 FIX: console.log dihapus, pakai logger
-//   🔴 FIX: separator key pakai null byte (hindari collision jika nama
-//           toko/produk mengandung "-")
-//   🟠 TODO: ganti agregasi in-memory ke SQL function (lihat catatan)
+// GET /stock-balances (Menggunakan Supabase RPC - JAUH LEBIH CEPAT)
 // =========================================================================
 router.get("/stock-balances", requireAuth, async (req, res) => {
   try {
     const store = isNonEmptyString(req.query.store)
       ? req.query.store.trim()
-      : undefined;
+      : null; // Kirim null jika tidak ada filter toko
 
-    // Ambil kolom seperlunya saja (jangan "*")
-    let query = supabaseAdmin
-      .from("stock_entries")
-      .select("store, product, barcode, quantity, transaction")
-      .order("id", { ascending: true })
-      .limit(5000);
-
-    if (store) query = query.eq("store", store);
-
-    const { data, error } = await query;
+    // Panggil fungsi SQL yang baru saja dibuat di Supabase
+    const { data, error } = await supabaseAdmin.rpc("get_stock_balances", {
+      p_store: store,
+    });
 
     if (error) {
-      logger.error({ err: error, store }, "GET /stock-balances failed");
+      logger.error({ err: error, store }, "GET /stock-balances RPC failed");
       return res.status(500).json({ error: "Gagal mengambil data saldo." });
     }
 
-    // Agregasi di memori (sementara — lihat catatan optimasi di bawah)
-    const balancesMap = new Map<
-      string,
-      {
-        store: string;
-        product: string;
-        barcode: string;
-        totalQuantity: number;
-      }
-    >();
-
-    for (const row of data ?? []) {
-      if (!row.store || !row.product) continue;
-
-      // Gunakan null-byte sebagai separator — aman dari collision
-      const key = `${row.store}\u0000${row.product}`;
-
-      if (!balancesMap.has(key)) {
-        balancesMap.set(key, {
-          store: row.store,
-          product: row.product,
-          barcode: row.barcode || "-",
-          totalQuantity: 0,
-        });
-      }
-
-      const item = balancesMap.get(key)!;
-      const qty = Number(row.quantity) || 0;
-      item.totalQuantity += NEGATIVE_TX.has(row.transaction) ? -qty : qty;
-    }
-
-    // Bulatkan untuk hindari floating point artifacts
-    const balances = Array.from(balancesMap.values()).map((b) => ({
-      ...b,
-      totalQuantity: Math.round(b.totalQuantity * 100) / 100,
+    // Format ulang data agar sesuai dengan yang diharapkan Frontend Anda
+    const balances = (data ?? []).map((row: any) => ({
+      store: row.store,
+      product: row.product,
+      barcode: row.barcode || "-",
+      // Pastikan dikonversi ke number
+      totalQuantity: Number(row.total_quantity) || 0,
     }));
 
-    // ⚠️ Shape tetap array murni — JANGAN diubah (frontend bergantung)
+    // Tetap kembalikan array murni (Jangan dibungkus)
     return res.json(balances);
   } catch (err) {
     logger.error({ err }, "GET /stock-balances unexpected error");
