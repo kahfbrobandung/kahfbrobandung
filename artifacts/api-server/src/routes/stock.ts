@@ -1,5 +1,5 @@
 import { Router, type IRouter, type Request, type Response } from "express";
-import { requireAuth, supabaseAdmin } from "../middlewares/auth";
+import { requireAuth, supabaseAdmin, type AuthenticatedRequest } from "../middlewares/auth";
 import { logger } from "../lib/logger";
 
 const router: IRouter = Router();
@@ -11,10 +11,14 @@ const toNumber = (v: unknown, fallback = 0) =>
   typeof v === "number" && Number.isFinite(v) ? v : fallback;
 
 // =========================================================================
-// GET /stock-entries (Tetap sama)
+// GET /stock-entries
 // =========================================================================
-router.get("/stock-entries", requireAuth, async (req, res) => {
+router.get("/stock-entries", requireAuth, async (req: Request, res: Response) => {
   try {
+    const authReq = req as AuthenticatedRequest;
+    const userId = authReq.user?.id;
+    if (!userId) return res.status(401).json({ error: "Akses ditolak." });
+
     const store = isNonEmptyString(req.query.store)
       ? req.query.store.trim()
       : undefined;
@@ -27,6 +31,7 @@ router.get("/stock-entries", requireAuth, async (req, res) => {
     let query = supabaseAdmin
       .from("stock_entries")
       .select("*", { count: "exact" })
+      .eq("user_id", userId) // <--- FILTER PER USER
       .order("id", { ascending: false })
       .limit(limit);
 
@@ -35,7 +40,7 @@ router.get("/stock-entries", requireAuth, async (req, res) => {
     const { data, error, count } = await query;
 
     if (error) {
-      logger.error({ err: error, store }, "GET /stock-entries failed");
+      logger.error({ err: error, store, userId }, "GET /stock-entries failed");
       return res.status(500).json({ error: "Gagal mengambil data stok." });
     }
 
@@ -50,10 +55,14 @@ router.get("/stock-entries", requireAuth, async (req, res) => {
 });
 
 // =========================================================================
-// POST /stock-entries (Tetap sama)
+// POST /stock-entries
 // =========================================================================
-router.post("/stock-entries", requireAuth, async (req, res) => {
+router.post("/stock-entries", requireAuth, async (req: Request, res: Response) => {
   try {
+    const authReq = req as AuthenticatedRequest;
+    const userId = authReq.user?.id;
+    if (!userId) return res.status(401).json({ error: "Akses ditolak." });
+
     const {
       store,
       transaction,
@@ -82,6 +91,7 @@ router.post("/stock-entries", requireAuth, async (req, res) => {
     const { data, error } = await supabaseAdmin
       .from("stock_entries")
       .insert({
+        user_id: userId, // <--- SIMPAN USER ID
         store: store.trim(),
         transaction: isNonEmptyString(transaction) ? transaction : "Input Stok",
         product: product.trim(),
@@ -98,7 +108,7 @@ router.post("/stock-entries", requireAuth, async (req, res) => {
       .single();
 
     if (error) {
-      logger.error({ err: error, store, product }, "POST /stock-entries failed");
+      logger.error({ err: error, store, product, userId }, "POST /stock-entries failed");
       return res.status(500).json({ error: "Gagal menyimpan data stok." });
     }
 
@@ -110,21 +120,26 @@ router.post("/stock-entries", requireAuth, async (req, res) => {
 });
 
 // =========================================================================
-// GET /stock-balances (Menggunakan Supabase RPC - JAUH LEBIH CEPAT)
+// GET /stock-balances (Menggunakan Supabase RPC)
 // =========================================================================
-router.get("/stock-balances", requireAuth, async (req, res) => {
+router.get("/stock-balances", requireAuth, async (req: Request, res: Response) => {
   try {
+    const authReq = req as AuthenticatedRequest;
+    const userId = authReq.user?.id;
+    if (!userId) return res.status(401).json({ error: "Akses ditolak." });
+
     const store = isNonEmptyString(req.query.store)
       ? req.query.store.trim()
       : null; // Kirim null jika tidak ada filter toko
 
-    // Panggil fungsi SQL yang baru saja dibuat di Supabase
+    // Panggil fungsi SQL yang baru (dengan parameter user_id)
     const { data, error } = await supabaseAdmin.rpc("get_stock_balances", {
+      p_user_id: userId, // <--- KIRIM USER ID KE DATABASE
       p_store: store,
     });
 
     if (error) {
-      logger.error({ err: error, store }, "GET /stock-balances RPC failed");
+      logger.error({ err: error, store, userId }, "GET /stock-balances RPC failed");
       return res.status(500).json({ error: "Gagal mengambil data saldo." });
     }
 
@@ -133,11 +148,9 @@ router.get("/stock-balances", requireAuth, async (req, res) => {
       store: row.store,
       product: row.product,
       barcode: row.barcode || "-",
-      // Pastikan dikonversi ke number
       totalQuantity: Number(row.total_quantity) || 0,
     }));
 
-    // Tetap kembalikan array murni (Jangan dibungkus)
     return res.json(balances);
   } catch (err) {
     logger.error({ err }, "GET /stock-balances unexpected error");
