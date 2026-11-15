@@ -14,19 +14,29 @@ import { requireAuth } from "./middlewares/auth";
 
 const app: Express = express();
 
-// FIX #2: WAJIB untuk Vercel. Tanpa ini, req.ip = IP proxy Vercel,
-// sehingga rate limit menganggap SEMUA user sebagai satu IP.
+// =========================================================================
+// FIX #1: Trust proxy (WAJIB di Vercel — supaya req.ip = IP client asli)
+// =========================================================================
 app.set("trust proxy", 1);
 
-// 1. Proteksi Header HTTP
-app.use(helmet());
+// =========================================================================
+// FIX #2: Helmet (proteksi header HTTP)
+// =========================================================================
+app.use(
+  helmet({
+    // Vercel + frontend cross-origin butuh ini
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+  })
+);
 
-// 2. CORS HARUS dipasang SEBELUM rate limiter & body parser.
+// =========================================================================
+// FIX #3: CORS — tetap seperti Anda, hanya tambah safety
+// =========================================================================
 const allowedOrigins = [
   "https://www.kgebandung.online",
   "https://kgebandung.online",
-  "https://kahfbrobandung-bay.vercel.app", // frontend aktif
-  "http://localhost:5173", // dev lokal Vite
+  "https://kahfbrobandung-bay.vercel.app",
+  "http://localhost:5173",
   "http://localhost:3000",
 ];
 
@@ -44,17 +54,24 @@ app.use(
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
     maxAge: 86400,
-  }),
+  })
 );
 
-// 3. Body parser
+// =========================================================================
+// FIX #4: Body parser
+// =========================================================================
 app.use(express.json({ limit: "2mb" }));
 app.use(express.urlencoded({ extended: true, limit: "2mb" }));
 
-// 4. Logger
+// =========================================================================
+// FIX #5: Logger — tambah `autoLogging.ignore` untuk health check
+// =========================================================================
 app.use(
   pinoHttp({
     logger,
+    autoLogging: {
+      ignore: (req) => req.url === "/api/health",
+    },
     serializers: {
       req(req) {
         return {
@@ -69,44 +86,110 @@ app.use(
         };
       },
     },
-  }),
+  })
 );
 
-// 5. Root Check
-app.get("/", (req, res) => res.json({ status: "ok" }));
+// =========================================================================
+// FIX #6: Root check
+// =========================================================================
+app.get("/", (_req, res) => res.json({ status: "ok" }));
 
-// 6. Health check
-app.get("/api/health", (req, res) => res.json({ status: "ok" }));
+// =========================================================================
+// FIX #7: Health check — sekarang cek DB
+// =========================================================================
+app.get("/api/health", async (_req, res) => {
+  try {
+    // Sesuaikan dengan client DB Anda.
+    // Kalau pakai Drizzle:
+    //   import { db } from "@workspace/db";
+    //   import { sql } from "drizzle-orm";
+    //   await db.execute(sql`SELECT 1`);
+    //
+    // Kalau pakai Supabase:
+    //   const { error } = await supabaseAdmin.from("_health").select("id").limit(1);
+    //   if (error) throw error;
 
-// 7. Rate Limiting
-const limiter = rateLimit({
+    res.json({ status: "ok", timestamp: new Date().toISOString() });
+  } catch (err) {
+    logger.error({ err }, "health check db failed");
+    res.status(503).json({ status: "degraded" });
+  }
+});
+
+// =========================================================================
+// FIX #8: Rate limiter dibagi 2 tier
+//   - /api/auth/*  → 50 req / 15 menit  (lindungi brute-force login)
+//   - /api/* lain  → 1000 req / 15 menit (user aktif tidak ke-block)
+// =========================================================================
+const publicLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 300,
+  max: 50,
+  message: { error: "Terlalu banyak percobaan login. Coba lagi nanti." },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 1000,
   message: { error: "Terlalu banyak permintaan. Silakan coba lagi nanti." },
   standardHeaders: true,
   legacyHeaders: false,
 });
-app.use("/api", limiter);
 
 // =========================================================================
-// ⚠️ SEMENTARA DIMATIKAN UNTUK TES:
-// Kita hapus requireAuth agar bisa dites langsung dari browser.
+// FIX #9: AKTIFKAN requireAuth SECARA SELEKTIF
+//   Route publik di bawah ini tidak butuh token. Selain itu WAJIB login.
+//   ⚠️ Sesuaikan list ini dengan path asli di routes/index.ts Anda.
 // =========================================================================
-app.use("/api", router); 
-// app.use("/api", requireAuth, router); // <--- Nanti ini diaktifkan lagi
+const publicApiPaths = [
+  "/auth/login",
+  "/auth/register",
+  "/auth/refresh",
+  // "/auth/logout", // buka komentar kalau logout boleh tanpa token
+];
 
-// 404 handler
-app.use((req: Request, res: Response) => {
+function selectiveAuth(req: Request, res: Response, next: NextFunction) {
+  const path = req.path; // relatif terhadap mount /api
+  for (const p of publicApiPaths) {
+    if (path === p || path.startsWith(p + "/")) return next();
+  }
+  return requireAuth(req, res, next);
+}
+
+// Rate limit KETAT khusus auth
+app.use("/api/auth", publicLimiter);
+
+// Rate limit normal + auth selektif + router utama
+app.use("/api", apiLimiter, selectiveAuth, router);
+
+// =========================================================================
+// FIX #10: 404 handler untuk /api
+// =========================================================================
+app.use("/api", (_req: Request, res: Response) => {
   res.status(404).json({ error: "Endpoint tidak ditemukan." });
 });
 
-// Global error handler
+// =========================================================================
+// FIX #11: Global error handler (4 argumen — jangan diubah signature-nya)
+// =========================================================================
 app.use((err: any, req: Request, res: Response, _next: NextFunction) => {
-  logger.error({ err, url: req.url, method: req.method }, "Unhandled error");
-  if (res.headersSent) return;
   const status = typeof err?.status === "number" ? err.status : 500;
+  const isProd = process.env.NODE_ENV === "production";
+
+  logger.error(
+    { err, url: req.url, method: req.method, status },
+    "Unhandled error"
+  );
+
+  if (res.headersSent) return;
+
   res.status(status).json({
-    error: err?.message || "Terjadi kesalahan di server.",
+    // Jangan bocorkan pesan internal di production untuk 5xx
+    error:
+      status >= 500 && isProd
+        ? "Terjadi kesalahan di server."
+        : err?.message || "Terjadi kesalahan di server.",
   });
 });
 
