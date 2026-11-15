@@ -1,10 +1,11 @@
 import { useState, useMemo } from "react";
 import { Link } from "wouter";
-import { ArrowLeft, TrendingUp, PackageMinus, AlertCircle } from "lucide-react";
-import { useGetSalesMonitor } from "@workspace/api-client-react";
+import { ArrowLeft, TrendingUp, PackageMinus, AlertCircle, Trash2 } from "lucide-react";
+// 1. TAMBAHKAN IMPORT HOOK HAPUS
+import { useGetSalesMonitor, useDeleteStockVisit, useDeleteStockRestock } from "@workspace/api-client-react";
 import { useStoreName } from "@/hooks/useStoreName";
 
-// Tipe data untuk memastikan TypeScript aman
+// 2. TAMBAHKAN ARRAY UNTUK MENYIMPAN ID YANG AKAN DIHAPUS
 type GroupedItem = {
   store: string;
   product: string;
@@ -15,6 +16,8 @@ type GroupedItem = {
   currentStock: number;
   soldQuantity: number;
   latestVisitTime: number;
+  visitIds: number[]; // Tambahan: Menyimpan ID kunjungan (SO)
+  restockIds: number[]; // Tambahan: Menyimpan ID restock
 };
 
 const getLocalDateString = (dateString: string) => {
@@ -42,14 +45,16 @@ export default function DailySalesReport() {
     };
   });
 
-  // Tambahkan isError untuk menangkap jika API gagal (misal Vercel timeout)
   const { data: salesMonitor, isLoading: monitorLoading, isError } = useGetSalesMonitor({
     from: dateRange.from,
     to: dateRange.to,
     store: activeStore || undefined,
   });
 
-  // PERBAIKAN 1: Jangan buang barang yang tidak terjual (0) jika ada Stok Masuk (Restock)
+  // 3. INISIALISASI HOOK UNTUK MENGHAPUS
+  const deleteVisitMutation = useDeleteStockVisit();
+  const deleteRestockMutation = useDeleteStockRestock();
+
   const activeItems = salesMonitor?.calculations?.filter(
     (item) => item.soldQuantity > 0 || item.restockQuantity > 0 || item.stockEntryAdjustment !== 0
   ) || [];
@@ -78,13 +83,23 @@ export default function DailySalesReport() {
           currentStock: item.currentStock,
           soldQuantity: 0,
           latestVisitTime: 0,
+          visitIds: [],
+          restockIds: [],
         };
       }
       
-      // PERBAIKAN 2: Pastikan data berupa Number agar tidak terjadi NaN (Not a Number)
       groups[dateStr][key].soldQuantity += Number(item.soldQuantity);
       groups[dateStr][key].restockQuantity += Number(item.restockQuantity);
       groups[dateStr][key].stockEntryAdjustment += Number(item.stockEntryAdjustment);
+      
+      // Simpan ID jika ada (asumsi API mengembalikan visitId / restockId)
+      const anyItem = item as any;
+      if (anyItem.visitId && !groups[dateStr][key].visitIds.includes(anyItem.visitId)) {
+        groups[dateStr][key].visitIds.push(anyItem.visitId);
+      }
+      if (anyItem.restockId && !groups[dateStr][key].restockIds.includes(anyItem.restockId)) {
+        groups[dateStr][key].restockIds.push(anyItem.restockId);
+      }
       
       const visitTime = new Date(item.currentVisitAt).getTime();
       if (visitTime >= groups[dateStr][key].latestVisitTime) {
@@ -107,10 +122,35 @@ export default function DailySalesReport() {
 
   const visibleDates = sortedDates.slice(0, visibleDatesCount);
 
-  // Helper untuk format tanggal aman dari timezone bug
   const formatDateIndo = (dateString: string) => {
-    const d = new Date(`${dateString}T00:00:00`); // Paksa waktu lokal, bukan UTC
+    const d = new Date(`${dateString}T00:00:00`); 
     return d.toLocaleDateString("id-ID", { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' });
+  };
+
+  // 4. FUNGSI UNTUK MENGHAPUS DATA
+  const handleDeleteItem = (item: GroupedItem) => {
+    const confirmDelete = window.confirm(`Hapus semua data penjualan/stok untuk produk "${item.product}" pada tanggal ini?`);
+    if (!confirmDelete) return;
+
+    let hasError = false;
+
+    // Hapus semua data kunjungan (Visits)
+    item.visitIds.forEach((id) => {
+      deleteVisitMutation.mutate({ id }, {
+        onError: () => { hasError = true; }
+      });
+    });
+
+    // Hapus semua data barang masuk (Restocks)
+    item.restockIds.forEach((id) => {
+      deleteRestockMutation.mutate({ id }, {
+        onError: () => { hasError = true; }
+      });
+    });
+
+    if (hasError) {
+      alert("Beberapa data mungkin gagal dihapus. Silakan coba lagi.");
+    }
   };
 
   return (
@@ -160,7 +200,6 @@ export default function DailySalesReport() {
           </div>
         </div>
 
-        {/* Tampilan Jika API Error */}
         {isError && (
           <div className="bg-red-50 border border-red-200 text-red-600 rounded-2xl p-4 flex items-center gap-3">
             <AlertCircle size={20} />
@@ -228,11 +267,22 @@ export default function DailySalesReport() {
                               <p className="text-sm font-bold text-slate-800 dark:text-slate-100">{item.product}</p>
                               <p className="text-[11px] text-sky-600 dark:text-sky-400 font-mono">{item.barcode}</p>
                             </div>
-                            <div className="text-right shrink-0">
-                              <p className="text-[10px] uppercase tracking-wider font-semibold text-sky-600 dark:text-sky-400">Terjual</p>
-                              <p className="text-2xl font-bold text-sky-600 dark:text-sky-400">
-                                {item.soldQuantity} <span className="text-xs font-normal text-sky-500/70">pcs</span>
-                              </p>
+                            
+                            {/* 5. TAMBAHKAN TOMBOL HAPUS DI SINI */}
+                            <div className="text-right shrink-0 flex items-start gap-2">
+                              <div>
+                                <p className="text-[10px] uppercase tracking-wider font-semibold text-sky-600 dark:text-sky-400">Terjual</p>
+                                <p className="text-2xl font-bold text-sky-600 dark:text-sky-400">
+                                  {item.soldQuantity} <span className="text-xs font-normal text-sky-500/70">pcs</span>
+                                </p>
+                              </div>
+                              <button
+                                onClick={() => handleDeleteItem(item)}
+                                className="p-1.5 text-red-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-md transition-colors"
+                                title="Hapus Data"
+                              >
+                                <Trash2 size={16} />
+                              </button>
                             </div>
                           </div>
 
@@ -243,7 +293,6 @@ export default function DailySalesReport() {
                             </div>
                             <div className="border-x border-sky-100 dark:border-slate-800">
                               <p className="text-[10px] text-slate-500">Stok Masuk</p>
-                              {/* Tampilkan Restock murni tanpa adjustment yang membingungkan */}
                               <p className="text-sm font-semibold text-sky-600">+{item.restockQuantity}</p>
                             </div>
                             <div>
