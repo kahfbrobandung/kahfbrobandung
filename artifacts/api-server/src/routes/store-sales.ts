@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, inArray } from "drizzle-orm";
-import { Router, type IRouter } from "express";
+import { Router, type IRouter, type Request } from "express";
 import {
   CreateStockRestockBody,
   CreateStockVisitBody,
@@ -20,10 +20,14 @@ import {
   stockVisitsTable,
   storesTable,
 } from "@workspace/db";
-// import { reconcileStockLedger } from "../lib/stock-ledger"; // DIMATIKAN SEMENTARA (timeout Vercel free tier)
+// import { reconcileStockLedger } from "../lib/stock-ledger"; // DIMATIKAN (timeout Vercel)
 import { iso, normalizeStoreName } from "./helpers";
+import { logger } from "../lib/logger";
 
 const router: IRouter = Router();
+
+// Tipe khusus untuk request yang sudah lolos autentikasi
+type AuthRequest = Request & { user?: { id: string } };
 
 // ---------------------------------------------------------------------------
 // Helper: parse tanggal dengan aman. Return null jika invalid.
@@ -37,8 +41,8 @@ function parseValidDate(input: unknown): Date | null {
 // ---------------------------------------------------------------------------
 // Helper: pastikan user sudah login. Return userId atau null.
 // ---------------------------------------------------------------------------
-function requireUser(req: any): string | null {
-  return req.user?.id ?? null;
+function requireUser(req: Request): string | null {
+  return (req as AuthRequest).user?.id ?? null;
 }
 
 // --- FUNGSI BANTUAN KEAMANAN (Multi-Tenant) ---
@@ -106,14 +110,20 @@ router.post("/stores", async (req, res) => {
   try {
     const normalized = normalizeStoreName(name);
 
+    // FIX #1: Cek nama toko HANYA untuk user ini (bukan global)
     const existingStore = await db
       .select({ id: storesTable.id })
       .from(storesTable)
-      .where(eq(storesTable.normalizedName, normalized))
+      .where(
+        and(
+          eq(storesTable.normalizedName, normalized),
+          eq(storesTable.userId, userId) // <--- Tambahan Krusial
+        )
+      )
       .limit(1);
 
     if (existingStore.length > 0) {
-      res.status(400).json({ error: "Nama toko sudah terdaftar. Gunakan nama lain." });
+      res.status(400).json({ error: "Anda sudah memiliki toko dengan nama ini." });
       return;
     }
 
@@ -128,7 +138,8 @@ router.post("/stores", async (req, res) => {
 
     res.status(201).json(newStore);
   } catch (error) {
-    console.error("Gagal tambah toko:", error);
+    // FIX #2: Gunakan logger, bukan console.error
+    logger.error({ err: error, userId }, "Gagal tambah toko");
     res.status(500).json({ error: "Gagal menambah toko. Silakan coba lagi." });
   }
 });
@@ -216,13 +227,11 @@ router.post("/stock-visits", async (req, res) => {
     return;
   }
 
-  // FIX #2: tolak keranjang kosong di backend (bukan hanya di frontend)
   if (!Array.isArray(parsed.data.lines) || parsed.data.lines.length === 0) {
     res.status(400).json({ error: "Minimal satu produk harus dicatat dalam kunjungan." });
     return;
   }
 
-  // FIX #3: validasi tanggal kunjungan
   const visitedAt = parseValidDate(parsed.data.visitedAt);
   if (!visitedAt) {
     res.status(400).json({ error: "Tanggal kunjungan tidak valid." });
@@ -241,85 +250,84 @@ router.post("/stock-visits", async (req, res) => {
     return;
   }
 
-  const visitId = await db.transaction(async (tx) => {
-    const [created] = await tx
-      .insert(stockVisitsTable)
-      .values({
-        clientId: parsed.data.clientId,
-        storeId: store.id,
-        visitedAt,
-      })
-      .onConflictDoNothing({ target: stockVisitsTable.clientId })
-      .returning({ id: stockVisitsTable.id });
+  try {
+    const visitId = await db.transaction(async (tx) => {
+      const [created] = await tx
+        .insert(stockVisitsTable)
+        .values({
+          clientId: parsed.data.clientId,
+          storeId: store.id,
+          visitedAt,
+        })
+        .onConflictDoNothing({ target: stockVisitsTable.clientId })
+        .returning({ id: stockVisitsTable.id });
 
-    if (!created) {
-      const [existing] = await tx
-        .select({ id: stockVisitsTable.id })
-        .from(stockVisitsTable)
-        .where(eq(stockVisitsTable.clientId, parsed.data.clientId))
-        .limit(1);
-      return existing?.id;
+      if (!created) {
+        const [existing] = await tx
+          .select({ id: stockVisitsTable.id })
+          .from(stockVisitsTable)
+          .where(eq(stockVisitsTable.clientId, parsed.data.clientId))
+          .limit(1);
+        return existing?.id;
+      }
+
+      const lines = await tx
+        .insert(stocktakeLinesTable)
+        .values(
+          parsed.data.lines.map((line) => ({
+            visitId: created.id,
+            product: line.product.trim(),
+            barcode: line.barcode.trim(),
+            displayQuantity: line.displayQuantity,
+            secondaryDisplayQuantity: line.secondaryDisplayQuantity,
+            warehouseQuantity: line.warehouseQuantity,
+            totalQuantity:
+              line.displayQuantity + line.secondaryDisplayQuantity + line.warehouseQuantity,
+          })),
+        )
+        .returning();
+
+      await tx
+        .insert(stockEntriesTable)
+        .values(
+          lines.map((line) => ({
+            clientId: randomUUID(),
+            store: store.name,
+            transaction: "Koreksi SO",
+            product: line.product,
+            quantity: 0,
+            barcode: line.barcode,
+            sourceType: "visit_correction",
+            sourceId: String(line.id),
+            occurredAt: visitedAt,
+            countedQuantity: line.totalQuantity,
+            countedDisplayQuantity: line.displayQuantity,
+            countedSecondaryDisplayQuantity: line.secondaryDisplayQuantity,
+            countedWarehouseQuantity: line.warehouseQuantity,
+            syncStatus: "local",
+          })),
+        )
+        .onConflictDoNothing({
+          target: [stockEntriesTable.sourceType, stockEntriesTable.sourceId],
+        });
+
+      return created.id;
+    });
+
+    if (!visitId) {
+      res.status(500).json({ error: "Kunjungan tidak berhasil disimpan." });
+      return;
     }
-
-    const lines = await tx
-      .insert(stocktakeLinesTable)
-      .values(
-        parsed.data.lines.map((line) => ({
-          visitId: created.id,
-          product: line.product.trim(),
-          barcode: line.barcode.trim(),
-          displayQuantity: line.displayQuantity,
-          secondaryDisplayQuantity: line.secondaryDisplayQuantity,
-          warehouseQuantity: line.warehouseQuantity,
-          totalQuantity:
-            line.displayQuantity + line.secondaryDisplayQuantity + line.warehouseQuantity,
-        })),
-      )
-      .returning();
-
-    await tx
-      .insert(stockEntriesTable)
-      .values(
-        lines.map((line) => ({
-          clientId: randomUUID(),
-          store: store.name,
-          transaction: "Koreksi SO",
-          product: line.product,
-          quantity: 0,
-          barcode: line.barcode,
-          sourceType: "visit_correction",
-          sourceId: String(line.id),
-          occurredAt: visitedAt,
-          countedQuantity: line.totalQuantity,
-          countedDisplayQuantity: line.displayQuantity,
-          countedSecondaryDisplayQuantity: line.secondaryDisplayQuantity,
-          countedWarehouseQuantity: line.warehouseQuantity,
-          syncStatus: "local",
-        })),
-      )
-      .onConflictDoNothing({
-        target: [stockEntriesTable.sourceType, stockEntriesTable.sourceId],
-      });
-
-    // --- FUNGSI BERAT DIMATIKAN SEMENTARA (timeout Vercel free tier) ---
-    // for (const barcode of new Set(lines.map((line) => line.barcode))) {
-    //   await reconcileStockLedger(tx, store.name, barcode);
-    // }
-    // -------------------------------------------------------------------
-
-    return created.id;
-  });
-
-  if (!visitId) {
-    res.status(500).json({ error: "Kunjungan tidak berhasil disimpan." });
-    return;
+    const visit = await loadVisit(visitId);
+    if (!visit) {
+      res.status(500).json({ error: "Kunjungan tersimpan tetapi gagal dimuat ulang." });
+      return;
+    }
+    res.status(201).json(visit);
+  } catch (err) {
+    logger.error({ err, userId }, "POST /stock-visits failed");
+    res.status(500).json({ error: "Terjadi kesalahan pada server." });
   }
-  const visit = await loadVisit(visitId);
-  if (!visit) {
-    res.status(500).json({ error: "Kunjungan tersimpan tetapi gagal dimuat ulang." });
-    return;
-  }
-  res.status(201).json(visit);
 });
 
 router.delete("/stock-visits/:id", async (req, res): Promise<void> => {
@@ -335,60 +343,59 @@ router.delete("/stock-visits/:id", async (req, res): Promise<void> => {
     return;
   }
 
-  const deleted = await db.transaction(async (tx) => {
-    const [visit] = await tx
-      .select({
-        id: stockVisitsTable.id,
-        store: storesTable.name,
-      })
-      .from(stockVisitsTable)
-      .innerJoin(storesTable, eq(stockVisitsTable.storeId, storesTable.id))
-      .where(
-        and(
-          eq(stockVisitsTable.id, parsed.data.id),
-          eq(storesTable.userId, userId),
-        ),
-      )
-      .limit(1);
-
-    if (!visit) return undefined;
-
-    const lines = await tx
-      .select({ id: stocktakeLinesTable.id, barcode: stocktakeLinesTable.barcode })
-      .from(stocktakeLinesTable)
-      .where(eq(stocktakeLinesTable.visitId, visit.id));
-
-    if (lines.length) {
-      await tx
-        .delete(stockEntriesTable)
+  try {
+    const deleted = await db.transaction(async (tx) => {
+      const [visit] = await tx
+        .select({
+          id: stockVisitsTable.id,
+          store: storesTable.name,
+        })
+        .from(stockVisitsTable)
+        .innerJoin(storesTable, eq(stockVisitsTable.storeId, storesTable.id))
         .where(
           and(
-            eq(stockEntriesTable.sourceType, "visit_correction"),
-            inArray(
-              stockEntriesTable.sourceId,
-              lines.map((line) => String(line.id)),
-            ),
+            eq(stockVisitsTable.id, parsed.data.id),
+            eq(storesTable.userId, userId),
           ),
-        );
-    }
-    await tx.delete(stockVisitsTable).where(eq(stockVisitsTable.id, visit.id));
+        )
+        .limit(1);
 
-    // --- FUNGSI BERAT DIMATIKAN SEMENTARA ---
-    // for (const barcode of new Set(lines.map((line) => line.barcode))) {
-    //   await reconcileStockLedger(tx, visit.store, barcode);
-    // }
-    // ----------------------------------------
+      if (!visit) return undefined;
 
-    return visit.id;
-  });
+      const lines = await tx
+        .select({ id: stocktakeLinesTable.id, barcode: stocktakeLinesTable.barcode })
+        .from(stocktakeLinesTable)
+        .where(eq(stocktakeLinesTable.visitId, visit.id));
 
-  if (!deleted) {
-    res.status(404).json({
-      error: "Kunjungan tidak ditemukan atau Anda tidak berhak menghapusnya.",
+      if (lines.length) {
+        await tx
+          .delete(stockEntriesTable)
+          .where(
+            and(
+              eq(stockEntriesTable.sourceType, "visit_correction"),
+              inArray(
+                stockEntriesTable.sourceId,
+                lines.map((line) => String(line.id)),
+              ),
+            ),
+          );
+      }
+      await tx.delete(stockVisitsTable).where(eq(stockVisitsTable.id, visit.id));
+
+      return visit.id;
     });
-    return;
+
+    if (!deleted) {
+      res.status(404).json({
+        error: "Kunjungan tidak ditemukan atau Anda tidak berhak menghapusnya.",
+      });
+      return;
+    }
+    res.sendStatus(204);
+  } catch (err) {
+    logger.error({ err, userId }, "DELETE /stock-visits failed");
+    res.status(500).json({ error: "Terjadi kesalahan pada server." });
   }
-  res.sendStatus(204);
 });
 
 // ===========================================================================
@@ -466,7 +473,6 @@ router.post("/stock-restocks", async (req, res) => {
     return;
   }
 
-  // FIX #3: validasi tanggal barang masuk
   const receivedAt = parseValidDate(parsed.data.receivedAt);
   if (!receivedAt) {
     res.status(400).json({ error: "Tanggal barang masuk tidak valid." });
@@ -479,71 +485,70 @@ router.post("/stock-restocks", async (req, res) => {
     return;
   }
 
-  const row = await db.transaction(async (tx) => {
-    const [created] = await tx
-      .insert(stockRestocksTable)
-      .values({
-        clientId: parsed.data.clientId,
-        storeId: store.id,
-        product: parsed.data.product.trim(),
-        barcode: parsed.data.barcode.trim(),
-        quantity: parsed.data.quantity,
-        receivedAt,
-        note: parsed.data.note?.trim() || null,
-      })
-      .onConflictDoNothing({ target: stockRestocksTable.clientId })
-      .returning();
+  try {
+    const row = await db.transaction(async (tx) => {
+      const [created] = await tx
+        .insert(stockRestocksTable)
+        .values({
+          clientId: parsed.data.clientId,
+          storeId: store.id,
+          product: parsed.data.product.trim(),
+          barcode: parsed.data.barcode.trim(),
+          quantity: parsed.data.quantity,
+          receivedAt,
+          note: parsed.data.note?.trim() || null,
+        })
+        .onConflictDoNothing({ target: stockRestocksTable.clientId })
+        .returning();
 
-    // created = row baru (flat dari .returning())
-    // fallback = select satu tabel (flat)
-    const [restock] = created
-      ? [created]
-      : await tx
-          .select()
-          .from(stockRestocksTable)
-          .where(eq(stockRestocksTable.clientId, parsed.data.clientId))
-          .limit(1);
-    if (!restock) return undefined;
+      const [restock] = created
+        ? [created]
+        : await tx
+            .select()
+            .from(stockRestocksTable)
+            .where(eq(stockRestocksTable.clientId, parsed.data.clientId))
+            .limit(1);
+      if (!restock) return undefined;
 
-    await tx
-      .insert(stockEntriesTable)
-      .values({
-        clientId: randomUUID(),
-        store: store.name,
-        transaction: "Barang Masuk",
-        product: restock.product,
-        quantity: restock.quantity,
-        barcode: restock.barcode,
-        sourceType: "restock",
-        sourceId: String(restock.id),
-        occurredAt: restock.receivedAt,
-        syncStatus: "local",
-      })
-      .onConflictDoNothing({
-        target: [stockEntriesTable.sourceType, stockEntriesTable.sourceId],
-      });
+      await tx
+        .insert(stockEntriesTable)
+        .values({
+          clientId: randomUUID(),
+          store: store.name,
+          transaction: "Barang Masuk",
+          product: restock.product,
+          quantity: restock.quantity,
+          barcode: restock.barcode,
+          sourceType: "restock",
+          sourceId: String(restock.id),
+          occurredAt: restock.receivedAt,
+          syncStatus: "local",
+        })
+        .onConflictDoNothing({
+          target: [stockEntriesTable.sourceType, stockEntriesTable.sourceId],
+        });
 
-    // --- FUNGSI BERAT DIMATIKAN SEMENTARA ---
-    // await reconcileStockLedger(tx, store.name, restock.barcode);
-    // ----------------------------------------
+      return restock;
+    });
 
-    return restock;
-  });
+    if (!row) {
+      res.status(500).json({ error: "Barang masuk tidak berhasil disimpan." });
+      return;
+    }
 
-  if (!row) {
-    res.status(500).json({ error: "Barang masuk tidak berhasil disimpan." });
-    return;
+    res.status(201).json({
+      ...row,
+      store: store.name,
+      note: row.note ?? undefined,
+      receivedAt: iso(row.receivedAt),
+      createdAt: iso(row.createdAt),
+      invoiceRecordedAt: row.invoiceRecordedAt ? iso(row.invoiceRecordedAt) : null,
+      effectiveQuantity: row.invoiceQuantity ?? row.quantity,
+    });
+  } catch (err) {
+    logger.error({ err, userId }, "POST /stock-restocks failed");
+    res.status(500).json({ error: "Terjadi kesalahan pada server." });
   }
-
-  res.status(201).json({
-    ...row,
-    store: store.name,
-    note: row.note ?? undefined,
-    receivedAt: iso(row.receivedAt),
-    createdAt: iso(row.createdAt),
-    invoiceRecordedAt: row.invoiceRecordedAt ? iso(row.invoiceRecordedAt) : null,
-    effectiveQuantity: row.invoiceQuantity ?? row.quantity,
-  });
 });
 
 router.patch("/stock-restocks/:id/invoice", async (req, res): Promise<void> => {
@@ -560,14 +565,12 @@ router.patch("/stock-restocks/:id/invoice", async (req, res): Promise<void> => {
     return;
   }
 
-  // FIX #4: aman terhadap invoiceNumber opsional
   const invoiceNumber = parsed.data.invoiceNumber?.trim();
   if (!invoiceNumber) {
     res.status(400).json({ error: "Nomor faktur wajib diisi." });
     return;
   }
 
-  // FIX #3: validasi tanggal faktur
   const invoiceDate = parseValidDate(parsed.data.invoiceDate);
   if (!invoiceDate) {
     res.status(400).json({ error: "Tanggal faktur tidak valid." });
@@ -576,90 +579,92 @@ router.patch("/stock-restocks/:id/invoice", async (req, res): Promise<void> => {
   const invoiceDateStr = invoiceDate.toISOString().slice(0, 10);
 
   const recordedAt = new Date();
-  const result = await db.transaction(async (tx) => {
-    const [existingRestock] = await tx
-      .select({ id: stockRestocksTable.id })
-      .from(stockRestocksTable)
-      .innerJoin(storesTable, eq(stockRestocksTable.storeId, storesTable.id))
-      .where(
-        and(eq(stockRestocksTable.id, path.data.id), eq(storesTable.userId, userId)),
-      )
-      .limit(1);
 
-    if (!existingRestock) return undefined;
+  try {
+    const result = await db.transaction(async (tx) => {
+      const [existingRestock] = await tx
+        .select({ id: stockRestocksTable.id })
+        .from(stockRestocksTable)
+        .innerJoin(storesTable, eq(stockRestocksTable.storeId, storesTable.id))
+        .where(
+          and(eq(stockRestocksTable.id, path.data.id), eq(storesTable.userId, userId)),
+        )
+        .limit(1);
 
-    const [updated] = await tx
-      .update(stockRestocksTable)
-      .set({
-        invoiceNumber,
-        invoiceQuantity: parsed.data.invoiceQuantity,
-        invoiceDate: invoiceDateStr,
-        invoiceRecordedAt: recordedAt,
-      })
-      .where(eq(stockRestocksTable.id, path.data.id))
-      .returning();
-    if (!updated) return undefined;
+      if (!existingRestock) return undefined;
 
-    const [store] = await tx
-      .select({ name: storesTable.name })
-      .from(storesTable)
-      .where(eq(storesTable.id, updated.storeId))
-      .limit(1);
-    if (!store) throw new Error("Toko untuk barang masuk tidak ditemukan.");
+      const [updated] = await tx
+        .update(stockRestocksTable)
+        .set({
+          invoiceNumber,
+          invoiceQuantity: parsed.data.invoiceQuantity,
+          invoiceDate: invoiceDateStr,
+          invoiceRecordedAt: recordedAt,
+        })
+        .where(eq(stockRestocksTable.id, path.data.id))
+        .returning();
+      if (!updated) return undefined;
 
-    await tx
-      .insert(stockEntriesTable)
-      .values({
-        clientId: randomUUID(),
-        store: store.name,
-        transaction: "Koreksi Faktur",
-        product: updated.product,
-        quantity: parsed.data.invoiceQuantity - updated.quantity,
-        barcode: updated.barcode,
-        sourceType: "restock_invoice",
-        sourceId: String(updated.id),
-        occurredAt: recordedAt,
-        createdAt: recordedAt,
-        syncStatus: "local",
-      })
-      .onConflictDoUpdate({
-        target: [stockEntriesTable.sourceType, stockEntriesTable.sourceId],
-        set: {
+      const [store] = await tx
+        .select({ name: storesTable.name })
+        .from(storesTable)
+        .where(eq(storesTable.id, updated.storeId))
+        .limit(1);
+      if (!store) throw new Error("Toko untuk barang masuk tidak ditemukan.");
+
+      await tx
+        .insert(stockEntriesTable)
+        .values({
+          clientId: randomUUID(),
           store: store.name,
           transaction: "Koreksi Faktur",
           product: updated.product,
           quantity: parsed.data.invoiceQuantity - updated.quantity,
           barcode: updated.barcode,
+          sourceType: "restock_invoice",
+          sourceId: String(updated.id),
           occurredAt: recordedAt,
           createdAt: recordedAt,
           syncStatus: "local",
-          syncError: null,
-        },
-      });
+        })
+        .onConflictDoUpdate({
+          target: [stockEntriesTable.sourceType, stockEntriesTable.sourceId],
+          set: {
+            store: store.name,
+            transaction: "Koreksi Faktur",
+            product: updated.product,
+            quantity: parsed.data.invoiceQuantity - updated.quantity,
+            barcode: updated.barcode,
+            occurredAt: recordedAt,
+            createdAt: recordedAt,
+            syncStatus: "local",
+            syncError: null,
+          },
+        });
 
-    // --- FUNGSI BERAT DIMATIKAN SEMENTARA ---
-    // await reconcileStockLedger(tx, store.name, updated.barcode);
-    // ----------------------------------------
+      return { updated, store };
+    });
 
-    return { updated, store };
-  });
-
-  if (!result) {
-    res.status(404).json({ error: "Catatan barang masuk tidak ditemukan." });
-    return;
+    if (!result) {
+      res.status(404).json({ error: "Catatan barang masuk tidak ditemukan." });
+      return;
+    }
+    const { updated, store } = result;
+    res.json({
+      ...updated,
+      store: store?.name ?? "",
+      note: updated.note ?? undefined,
+      receivedAt: iso(updated.receivedAt),
+      createdAt: iso(updated.createdAt),
+      invoiceRecordedAt: updated.invoiceRecordedAt
+        ? iso(updated.invoiceRecordedAt)
+        : null,
+      effectiveQuantity: updated.invoiceQuantity ?? updated.quantity,
+    });
+  } catch (err) {
+    logger.error({ err, userId }, "PATCH /stock-restocks/:id/invoice failed");
+    res.status(500).json({ error: "Terjadi kesalahan pada server." });
   }
-  const { updated, store } = result;
-  res.json({
-    ...updated,
-    store: store?.name ?? "",
-    note: updated.note ?? undefined,
-    receivedAt: iso(updated.receivedAt),
-    createdAt: iso(updated.createdAt),
-    invoiceRecordedAt: updated.invoiceRecordedAt
-      ? iso(updated.invoiceRecordedAt)
-      : null,
-    effectiveQuantity: updated.invoiceQuantity ?? updated.quantity,
-  });
 });
 
 router.delete("/stock-restocks/:id/invoice", async (req, res): Promise<void> => {
@@ -675,66 +680,57 @@ router.delete("/stock-restocks/:id/invoice", async (req, res): Promise<void> => 
     return;
   }
 
-  const updated = await db.transaction(async (tx) => {
-    // FIX #1: pakai kolom eksplisit untuk join.
-    // Sebelumnya `select()` tanpa kolom pada join mengembalikan objek
-    // NESTED { stockRestocks: {...}, stores: {...} } sehingga restock.id
-    // bernilai undefined → seluruh endpoint diam-diam tidak melakukan apa pun.
-    const [restock] = await tx
-      .select({
-        id: stockRestocksTable.id,
-        storeId: stockRestocksTable.storeId,
-        barcode: stockRestocksTable.barcode,
-      })
-      .from(stockRestocksTable)
-      .innerJoin(storesTable, eq(stockRestocksTable.storeId, storesTable.id))
-      .where(
-        and(
-          eq(stockRestocksTable.id, parsed.data.id),
-          eq(storesTable.userId, userId),
-        ),
-      )
-      .limit(1);
+  try {
+    const updated = await db.transaction(async (tx) => {
+      const [restock] = await tx
+        .select({
+          id: stockRestocksTable.id,
+          storeId: stockRestocksTable.storeId,
+          barcode: stockRestocksTable.barcode,
+        })
+        .from(stockRestocksTable)
+        .innerJoin(storesTable, eq(stockRestocksTable.storeId, storesTable.id))
+        .where(
+          and(
+            eq(stockRestocksTable.id, parsed.data.id),
+            eq(storesTable.userId, userId),
+          ),
+        )
+        .limit(1);
 
-    if (!restock) return undefined;
+      if (!restock) return undefined;
 
-    await tx
-      .update(stockRestocksTable)
-      .set({
-        invoiceNumber: null,
-        invoiceQuantity: null,
-        invoiceDate: null,
-        invoiceRecordedAt: null,
-      })
-      .where(eq(stockRestocksTable.id, restock.id));
+      await tx
+        .update(stockRestocksTable)
+        .set({
+          invoiceNumber: null,
+          invoiceQuantity: null,
+          invoiceDate: null,
+          invoiceRecordedAt: null,
+        })
+        .where(eq(stockRestocksTable.id, restock.id));
 
-    await tx
-      .delete(stockEntriesTable)
-      .where(
-        and(
-          eq(stockEntriesTable.sourceType, "restock_invoice"),
-          eq(stockEntriesTable.sourceId, String(restock.id)),
-        ),
-      );
+      await tx
+        .delete(stockEntriesTable)
+        .where(
+          and(
+            eq(stockEntriesTable.sourceType, "restock_invoice"),
+            eq(stockEntriesTable.sourceId, String(restock.id)),
+          ),
+        );
 
-    const [store] = await tx
-      .select({ name: storesTable.name })
-      .from(storesTable)
-      .where(eq(storesTable.id, restock.storeId))
-      .limit(1);
+      return restock.id;
+    });
 
-    // --- FUNGSI BERAT DIMATIKAN SEMENTARA ---
-    // if (store) await reconcileStockLedger(tx, store.name, restock.barcode);
-    // ----------------------------------------
-
-    return restock.id;
-  });
-
-  if (!updated) {
-    res.status(404).json({ error: "Catatan barang masuk tidak ditemukan." });
-    return;
+    if (!updated) {
+      res.status(404).json({ error: "Catatan barang masuk tidak ditemukan." });
+      return;
+    }
+    res.sendStatus(204);
+  } catch (err) {
+    logger.error({ err, userId }, "DELETE /stock-restocks/:id/invoice failed");
+    res.status(500).json({ error: "Terjadi kesalahan pada server." });
   }
-  res.sendStatus(204);
 });
 
 router.delete("/stock-restocks/:id", async (req, res): Promise<void> => {
@@ -750,53 +746,48 @@ router.delete("/stock-restocks/:id", async (req, res): Promise<void> => {
     return;
   }
 
-  const deleted = await db.transaction(async (tx) => {
-    const [restock] = await tx
-      .select({
-        id: stockRestocksTable.id,
-        storeId: stockRestocksTable.storeId,
-        barcode: stockRestocksTable.barcode,
-      })
-      .from(stockRestocksTable)
-      .innerJoin(storesTable, eq(stockRestocksTable.storeId, storesTable.id))
-      .where(
-        and(
-          eq(stockRestocksTable.id, parsed.data.id),
-          eq(storesTable.userId, userId),
-        ),
-      )
-      .limit(1);
+  try {
+    const deleted = await db.transaction(async (tx) => {
+      const [restock] = await tx
+        .select({
+          id: stockRestocksTable.id,
+          storeId: stockRestocksTable.storeId,
+          barcode: stockRestocksTable.barcode,
+        })
+        .from(stockRestocksTable)
+        .innerJoin(storesTable, eq(stockRestocksTable.storeId, storesTable.id))
+        .where(
+          and(
+            eq(stockRestocksTable.id, parsed.data.id),
+            eq(storesTable.userId, userId),
+          ),
+        )
+        .limit(1);
 
-    if (!restock) return undefined;
+      if (!restock) return undefined;
 
-    await tx
-      .delete(stockEntriesTable)
-      .where(
-        and(
-          inArray(stockEntriesTable.sourceType, ["restock", "restock_invoice"]),
-          eq(stockEntriesTable.sourceId, String(restock.id)),
-        ),
-      );
-    await tx.delete(stockRestocksTable).where(eq(stockRestocksTable.id, restock.id));
+      await tx
+        .delete(stockEntriesTable)
+        .where(
+          and(
+            inArray(stockEntriesTable.sourceType, ["restock", "restock_invoice"]),
+            eq(stockEntriesTable.sourceId, String(restock.id)),
+          ),
+        );
+      await tx.delete(stockRestocksTable).where(eq(stockRestocksTable.id, restock.id));
 
-    const [store] = await tx
-      .select({ name: storesTable.name })
-      .from(storesTable)
-      .where(eq(storesTable.id, restock.storeId))
-      .limit(1);
+      return restock.id;
+    });
 
-    // --- FUNGSI BERAT DIMATIKAN SEMENTARA ---
-    // if (store) await reconcileStockLedger(tx, store.name, restock.barcode);
-    // ----------------------------------------
-
-    return restock.id;
-  });
-
-  if (!deleted) {
-    res.status(404).json({ error: "Catatan barang masuk tidak ditemukan." });
-    return;
+    if (!deleted) {
+      res.status(404).json({ error: "Catatan barang masuk tidak ditemukan." });
+      return;
+    }
+    res.sendStatus(204);
+  } catch (err) {
+    logger.error({ err, userId }, "DELETE /stock-restocks/:id failed");
+    res.status(500).json({ error: "Terjadi kesalahan pada server." });
   }
-  res.sendStatus(204);
 });
 
 export default router;
