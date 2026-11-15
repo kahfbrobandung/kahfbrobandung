@@ -10,8 +10,12 @@ import {
 import { db, stockEntriesTable, storesTable } from "@workspace/db";
 import { normalizeStoreKey } from "../lib/stock-ledger";
 import { displayStoreName, iso, jakartaStartOfDay, normalizeStoreName } from "./helpers";
+import { logger } from "../lib/logger"; // FIX 1: Import logger
 
 const router = Router();
+
+// FIX 2: Gunakan tipe yang aman untuk request yang sudah login
+type AuthRequest = Request & { user?: { id: string } };
 
 type SalesQueryRow = {
   store: string;
@@ -36,7 +40,8 @@ async function getUserStores(userId: string) {
 // RUTE: DAFTAR TOKO (MULTI-TENANT)
 // ===========================================================================
 router.get("/stores", async (req: Request, res: Response): Promise<void> => {
-  const userId = (req as any).user?.id;
+  // FIX 3: Hapus (req as any)
+  const userId = (req as AuthRequest).user?.id;
   if (!userId) {
     res.status(401).json({ error: "Akses ditolak. Silakan login." });
     return;
@@ -52,7 +57,8 @@ router.get("/stores", async (req: Request, res: Response): Promise<void> => {
 
     res.json([...namesByNormalized.values()].sort((a, b) => a.localeCompare(b, "id")).map((name) => ({ name })));
   } catch (error) {
-    console.error("Gagal mengambil daftar toko:", error);
+    // FIX 4: Ganti console.error dengan logger
+    logger.error({ err: error, userId }, "Gagal mengambil daftar toko");
     res.status(500).json({ error: "Terjadi kesalahan sistem saat memuat daftar toko." });
   }
 });
@@ -61,7 +67,7 @@ router.get("/stores", async (req: Request, res: Response): Promise<void> => {
 // RUTE: PENJUALAN HARIAN (DAILY SALES)
 // ===========================================================================
 router.get("/daily-sales", async (req: Request, res: Response): Promise<void> => {
-  const userId = (req as any).user?.id;
+  const userId = (req as AuthRequest).user?.id;
   if (!userId) {
     res.status(401).json({ error: "Akses ditolak. Silakan login." });
     return;
@@ -145,7 +151,7 @@ router.get("/daily-sales", async (req: Request, res: Response): Promise<void> =>
       createdAt: iso(row.createdAt),
     }))));
   } catch (error) {
-    console.error("Gagal mengambil penjualan harian:", error);
+    logger.error({ err: error, userId }, "Gagal mengambil penjualan harian");
     res.status(500).json({ error: "Terjadi kesalahan sistem saat memuat laporan harian." });
   }
 });
@@ -154,7 +160,7 @@ router.get("/daily-sales", async (req: Request, res: Response): Promise<void> =>
 // RUTE: AKTIVITAS PENJUALAN (SALES ACTIVITY)
 // ===========================================================================
 router.get("/sales-activity", async (req: Request, res: Response): Promise<void> => {
-  const userId = (req as any).user?.id;
+  const userId = (req as AuthRequest).user?.id;
   if (!userId) {
     res.status(401).json({ error: "Akses ditolak. Silakan login." });
     return;
@@ -266,7 +272,7 @@ router.get("/sales-activity", async (req: Request, res: Response): Promise<void>
 
     res.json(GetSalesActivityResponse.parse(activity));
   } catch (error) {
-    console.error("Gagal mengambil aktivitas penjualan:", error);
+    logger.error({ err: error, userId }, "Gagal mengambil aktivitas penjualan");
     res.status(500).json({ error: "Terjadi kesalahan sistem saat memuat riwayat aktivitas." });
   }
 });
@@ -275,7 +281,7 @@ router.get("/sales-activity", async (req: Request, res: Response): Promise<void>
 // RUTE: MONITOR PENJUALAN (SALES MONITOR - QUERY BERAT)
 // ===========================================================================
 router.get("/sales-monitor", async (req: Request, res: Response): Promise<void> => {
-  const userId = (req as any).user?.id;
+  const userId = (req as AuthRequest).user?.id;
   if (!userId) {
     res.status(401).json({ error: "Akses ditolak. Silakan login." });
     return;
@@ -521,7 +527,7 @@ router.get("/sales-monitor", async (req: Request, res: Response): Promise<void> 
       calculations,
     });
   } catch (error) {
-    console.error("Gagal mengambil monitor penjualan:", error);
+    logger.error({ err: error, userId }, "Gagal mengambil monitor penjualan");
     res.status(500).json({ error: "Terjadi kesalahan sistem saat memuat monitor penjualan." });
   }
 });
