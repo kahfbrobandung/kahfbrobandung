@@ -1,20 +1,9 @@
 import type { StockEntry } from "@workspace/db";
-import { logger } from "../lib/logger"; // Pastikan path logger ini sesuai dengan project Anda
+import { logger } from "./logger"; // ✅ FIX: path sudah benar
 
-// Ambil URL dari environment variable. 
-// Hapus URL hardcoded demi keamanan (agar tidak disalahgunakan orang lain).
 const SHEETS_FORM_URL = process.env.GOOGLE_SHEETS_FORM_URL;
 
-/**
- * Fungsi untuk sinkronisasi ke Google Sheets.
- * 
- * PENTING: Fungsi ini dirancang sebagai "Fire-and-Forget".
- * JANGAN gunakan `await` saat memanggil fungsi ini di routes Anda.
- * Cukup panggil `void syncStockEntryToSpreadsheet(entry);`
- * agar server tidak menunggu (mencegah Vercel Timeout).
- */
 export async function syncStockEntryToSpreadsheet(entry: StockEntry): Promise<void> {
-  // 1. Jika URL belum diatur di Vercel, langsung lewati tanpa error
   if (!SHEETS_FORM_URL) {
     return;
   }
@@ -38,16 +27,14 @@ export async function syncStockEntryToSpreadsheet(entry: StockEntry): Promise<vo
     });
 
     if (!response.ok) {
-      // Jika Google Sheets error (misal script mati), catat di log tapi jangan crash
       logger.warn(
-        { status: response.status }, 
+        { status: response.status },
         "Google Sheets sync gagal (HTTP error)"
       );
     }
-  } catch (err) {
-    // Tangkap error jaringan agar aplikasi utama tidak ikut crash
+  } catch (err: any) { // ✅ FIX: tambahkan tipe `any`
     logger.error(
-      { err, product: entry.product }, 
+      { err: err.message || err, product: entry.product },
       "Error jaringan saat sinkronisasi ke Google Sheets"
     );
   }
