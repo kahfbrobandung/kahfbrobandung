@@ -76,8 +76,8 @@ export default function Login() {
     
     setLoading(true);
     try {
-      // PERBAIKAN: Hapus '/#/' agar tidak 404 saat link diklik
-      const redirectUrl = window.location.origin + '/reset-password';
+      // PERBAIKAN: Tambahkan '/#/' karena menggunakan Hash Routing (wouter)
+      const redirectUrl = window.location.origin + '/#/reset-password';
       
       const { error } = await supabase.auth.resetPasswordForEmail(cleanEmail, {
         redirectTo: redirectUrl,
