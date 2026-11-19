@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { useLocation } from 'wouter';
 import { supabase } from '@/supabase';
-import { customFetch, getListStoresQueryKey } from '@workspace/api-client-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useToast } from '@/hooks/use-toast';
 import { Store, Loader2, AlertCircle } from 'lucide-react';
@@ -19,7 +18,7 @@ export default function Onboarding() {
     e.preventDefault();
     const cleanName = name.trim();
 
-    // 1. VALIDASI FRONTEND (Cegah request sampah ke server)
+    // 1. VALIDASI FRONTEND
     if (cleanName.length < 2) {
       setErrorMsg('Nama toko minimal 2 karakter.');
       return;
@@ -33,15 +32,29 @@ export default function Onboarding() {
     setIsLoading(true);
     
     try {
-      await customFetch('/api/stores', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: cleanName }),
-      });
+      // 2. AMBIL SESI USER UNTUK MENDAPATKAN user_id
+      const { data: { user }, error: authError } = await supabase.auth.getUser();
+      if (authError || !user) throw new Error("Sesi login tidak ditemukan. Silakan login ulang.");
 
-      // 2. ANTI REFRESH: Hapus window.location.reload()
-      // Cukup perbarui cache data toko, lalu pindah halaman
-      queryClient.invalidateQueries({ queryKey: getListStoresQueryKey() });
+      // 3. SIMPAN LANGSUNG KE SUPABASE
+      const { error } = await supabase
+        .from('stores')
+        .insert({ 
+          name: cleanName,
+          user_id: user.id 
+        });
+
+      if (error) {
+        // Cek jika error karena nama toko duplikat (kode error Postgres: 23505)
+        if (error.code === '23505') {
+           throw new Error("Nama toko ini sudah dipakai. Silakan gunakan nama lain.");
+        }
+        throw error;
+      }
+
+      // 4. REFRESH CACHE & PINDAH HALAMAN
+      queryClient.invalidateQueries({ queryKey: ['storesList'] });
+      queryClient.invalidateQueries({ queryKey: ['stores'] }); // Antisipasi key lain
       
       toast({ 
         title: "Toko Berhasil Dibuat!", 
@@ -51,13 +64,7 @@ export default function Onboarding() {
       setLocation('/');
       
     } catch (error: any) {
-      // 3. TERJEMAHKAN ERROR AGAR RAMAH PENGGUNA
-      const msg = error?.message || '';
-      if (msg.toLowerCase().includes('sudah terdaftar')) {
-        setErrorMsg('Nama toko ini sudah dipakai. Silakan gunakan nama lain.');
-      } else {
-        setErrorMsg(msg || 'Gagal membuat toko. Periksa koneksi internet Anda.');
-      }
+      setErrorMsg(error.message || 'Gagal membuat toko. Periksa koneksi internet Anda.');
     } finally {
       setIsLoading(false);
     }
@@ -83,7 +90,6 @@ export default function Onboarding() {
           Mari mulai dengan membuat toko pertama Anda untuk menggunakan aplikasi Erlangga.
         </p>
 
-        {/* TAMPILAN PESAN ERROR (MENGGANTIKAN alert) */}
         {errorMsg && (
           <div className="mb-4 bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 text-sm p-3 rounded-xl flex items-start gap-2 border border-red-100 dark:border-red-800 animate-in slide-in-from-top-2">
             <AlertCircle size={18} className="shrink-0 mt-0.5" />
@@ -99,7 +105,7 @@ export default function Onboarding() {
               value={name}
               onChange={(e) => {
                 setName(e.target.value);
-                if (errorMsg) setErrorMsg(''); // Hapus error saat user mulai mengetik lagi
+                if (errorMsg) setErrorMsg('');
               }}
               placeholder="Contoh: Erlangga Cabang Dago"
               maxLength={50}
