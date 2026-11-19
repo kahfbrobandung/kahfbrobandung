@@ -1,10 +1,9 @@
 import { useState, useMemo } from "react";
 import { Link } from "wouter";
 import { ArrowLeft, TrendingUp, PackageMinus, AlertCircle, Trash2 } from "lucide-react";
-import { useGetSalesMonitor, useDeleteStockVisit, useDeleteStockRestock } from "@workspace/api-client-react";
 import { useStoreName } from "@/hooks/useStoreName";
-// 1. IMPORT USE QUERY CLIENT UNTUK REFRESH DATA
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { supabase } from "@/supabase";
 
 type GroupedItem = {
   store: string;
@@ -16,8 +15,7 @@ type GroupedItem = {
   currentStock: number;
   soldQuantity: number;
   latestVisitTime: number;
-  visitIds: number[];
-  restockIds: number[];
+  entryIds: string[]; // Menggunakan string karena ID Supabase biasanya UUID
 };
 
 const getLocalDateString = (dateString: string) => {
@@ -34,7 +32,6 @@ export default function DailySalesReport() {
   const activeStore = storeName.trim();
   const [visibleDatesCount, setVisibleDatesCount] = useState(1);
   
-  // 2. INISIALISASI QUERY CLIENT
   const queryClient = useQueryClient();
 
   const [dateRange, setDateRange] = useState(() => {
@@ -47,74 +44,86 @@ export default function DailySalesReport() {
     };
   });
 
-  const { data: salesMonitor, isLoading: monitorLoading, isError } = useGetSalesMonitor({
-    from: dateRange.from,
-    to: dateRange.to,
-    store: activeStore || undefined,
+  // 1. AMBIL DATA LANGSUNG DARI SUPABASE
+  const { data: rawEntries = [], isLoading: monitorLoading, isError } = useQuery({
+    queryKey: ['salesMonitor', activeStore, dateRange.from, dateRange.to],
+    queryFn: async () => {
+      if (!activeStore) return [];
+
+      // Ambil semua transaksi di toko ini pada rentang tanggal yang dipilih
+      const { data, error } = await supabase
+        .from('stock_entries') // <--- PASTIKAN NAMA TABEL INI SAMA DENGAN DI SUPABASE
+        .select('*')
+        .eq('store', activeStore)
+        .gte('created_at', dateRange.from)
+        .lte('created_at', dateRange.to + 'T23:59:59')
+        .order('created_at', { ascending: true });
+
+      if (error) throw error;
+      return data || [];
+    },
+    enabled: !!activeStore,
   });
 
-  const deleteVisitMutation = useDeleteStockVisit();
-  const deleteRestockMutation = useDeleteStockRestock();
-
-  const activeItems = salesMonitor?.calculations?.filter(
-    (item) => item.soldQuantity > 0 || item.restockQuantity > 0 || item.stockEntryAdjustment !== 0
-  ) || [];
-
-  const groupedItems = useMemo(() => {
+  // 2. PROSES DATA MENTAH MENJADI LAPORAN (Grouping)
+  const { groupedItems, summary } = useMemo(() => {
     const groups: Record<string, Record<string, GroupedItem>> = {};
-    
-    const sortedItems = [...activeItems].sort((a, b) => 
-      new Date(a.currentVisitAt).getTime() - new Date(b.currentVisitAt).getTime()
-    );
+    let totalSold = 0;
+    let totalRestocked = 0;
 
-    sortedItems.forEach((item) => {
-      const dateStr = getLocalDateString(item.currentVisitAt);
+    rawEntries.forEach((entry: any) => {
+      const dateStr = getLocalDateString(entry.created_at);
       if (!groups[dateStr]) groups[dateStr] = {};
       
-      const key = item.barcode;
+      const key = entry.barcode;
       if (!groups[dateStr][key]) {
         groups[dateStr][key] = {
-          store: item.store,
-          product: item.product,
-          barcode: item.barcode,
-          previousStock: item.previousStock,
+          store: entry.store,
+          product: entry.product,
+          barcode: entry.barcode,
+          previousStock: 0, // Bisa disesuaikan jika ada logika saldo awal
           restockQuantity: 0,
           stockEntryAdjustment: 0,
-          currentStock: item.currentStock,
+          currentStock: 0,
           soldQuantity: 0,
-          latestVisitTime: 0,
-          visitIds: [],
-          restockIds: [],
+          latestVisitTime: new Date(entry.created_at).getTime(),
+          entryIds: [],
         };
       }
-      
-      groups[dateStr][key].soldQuantity += Number(item.soldQuantity);
-      groups[dateStr][key].restockQuantity += Number(item.restockQuantity);
-      groups[dateStr][key].stockEntryAdjustment += Number(item.stockEntryAdjustment);
-      
-      // Pengecekan ID (menggunakan any agar TypeScript tidak protes jika API belum mendefinisikan tipe ID)
-      const anyItem = item as any;
-      if (anyItem.visitId && !groups[dateStr][key].visitIds.includes(anyItem.visitId)) {
-        groups[dateStr][key].visitIds.push(anyItem.visitId);
+
+      const qty = Number(entry.quantity) || 0;
+      const item = groups[dateStr][key];
+
+      // Kategorikan transaksi
+      if (['Penjualan'].includes(entry.transaction)) {
+        item.soldQuantity += qty;
+        totalSold += qty;
+      } else if (['Input Stok', 'Stock Awal', 'Pembelian', 'Retur'].includes(entry.transaction)) {
+        item.restockQuantity += qty;
+        totalRestocked += qty;
+      } else if (entry.transaction.includes('Koreksi')) {
+        item.stockEntryAdjustment += entry.transaction.includes('+') ? qty : -qty;
       }
-      if (anyItem.restockId && !groups[dateStr][key].restockIds.includes(anyItem.restockId)) {
-        groups[dateStr][key].restockIds.push(anyItem.restockId);
+
+      // Simpan ID untuk fitur hapus
+      if (entry.id && !item.entryIds.includes(entry.id)) {
+        item.entryIds.push(entry.id);
       }
       
-      const visitTime = new Date(item.currentVisitAt).getTime();
-      if (visitTime >= groups[dateStr][key].latestVisitTime) {
-        groups[dateStr][key].currentStock = Number(item.currentStock);
-        groups[dateStr][key].previousStock = Number(item.previousStock);
-        groups[dateStr][key].latestVisitTime = visitTime;
+      // Update waktu transaksi terakhir
+      const entryTime = new Date(entry.created_at).getTime();
+      if (entryTime >= item.latestVisitTime) {
+        item.latestVisitTime = entryTime;
       }
     });
-    
+
     const result: Record<string, GroupedItem[]> = {};
     Object.keys(groups).forEach(date => {
       result[date] = Object.values(groups[date]);
     });
-    return result;
-  }, [activeItems]);
+
+    return { groupedItems: result, summary: { totalSold, totalRestocked } };
+  }, [rawEntries]);
 
   const sortedDates = useMemo(() => {
     return Object.keys(groupedItems).sort((a, b) => b.localeCompare(a));
@@ -127,13 +136,10 @@ export default function DailySalesReport() {
     return d.toLocaleDateString("id-ID", { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' });
   };
 
-  // 3. FUNGSI HAPUS YANG SUDAH DIPERBARUI
+  // 3. FUNGSI HAPUS LANGSUNG KE SUPABASE
   const handleDeleteItem = async (item: GroupedItem) => {
-    // Tampilkan ID di Console Browser (F12) untuk ngecek apakah ID-nya ada
-    console.log("Mencoba menghapus:", { visitIds: item.visitIds, restockIds: item.restockIds });
-
-    if (item.visitIds.length === 0 && item.restockIds.length === 0) {
-      alert("Gagal: Data ID tidak ditemukan dari server. Pastikan API mengembalikan visitId/restockId.");
+    if (item.entryIds.length === 0) {
+      alert("Gagal: Data ID tidak ditemukan.");
       return;
     }
 
@@ -141,23 +147,20 @@ export default function DailySalesReport() {
     if (!confirmDelete) return;
 
     try {
-      // Hapus Visits
-      for (const id of item.visitIds) {
-        await deleteVisitMutation.mutateAsync({ id });
-      }
-      // Hapus Restocks
-      for (const id of item.restockIds) {
-        await deleteRestockMutation.mutateAsync({ id });
-      }
+      // Hapus semua baris transaksi yang berhubungan dengan item ini
+      const { error } = await supabase
+        .from('stock_entries')
+        .delete()
+        .in('id', item.entryIds);
 
-      // 4. REFRESH DATA SETELAH DIHAPUS (Agar langsung hilang dari layar)
-      queryClient.invalidateQueries({ queryKey: ["getSalesMonitor"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/store-sales/sales-monitor"] }); // fallback key
-      
+      if (error) throw error;
+
+      // Refresh data otomatis
+      queryClient.invalidateQueries({ queryKey: ['salesMonitor'] });
       alert("Data berhasil dihapus!");
     } catch (error) {
       console.error("Gagal menghapus:", error);
-      alert("Terjadi kesalahan saat menghapus data. Cek console browser.");
+      alert("Terjadi kesalahan saat menghapus data.");
     }
   };
 
@@ -171,7 +174,7 @@ export default function DailySalesReport() {
             </Link>
             <h1 className="text-2xl font-serif font-bold tracking-tight">Laporan Penjualan</h1>
             <h2 className="text-sm text-sky-100 font-medium">
-              {activeStore ? `Toko: ${activeStore}` : "Semua Toko"}
+              {activeStore ? `Toko: ${activeStore}` : "Pilih Toko di Menu Utama"}
             </h2>
           </div>
         </div>
@@ -211,14 +214,14 @@ export default function DailySalesReport() {
         {isError && (
           <div className="bg-red-50 border border-red-200 text-red-600 rounded-2xl p-4 flex items-center gap-3">
             <AlertCircle size={20} />
-            <p className="text-sm font-medium">Gagal memuat data. Koneksi ke server terputus.</p>
+            <p className="text-sm font-medium">Gagal memuat data. Periksa koneksi internet Anda.</p>
           </div>
         )}
 
         {/* Ringkasan Penjualan */}
         {monitorLoading ? (
            <div className="h-32 animate-pulse rounded-2xl bg-sky-100 dark:bg-slate-800" />
-        ) : salesMonitor ? (
+        ) : (
           <div className="bg-white dark:bg-slate-900 border border-sky-100 dark:border-slate-800 shadow-sm rounded-2xl p-5">
             <h3 className="font-serif text-lg font-bold mb-4 flex items-center gap-2 text-slate-800 dark:text-slate-100">
               <TrendingUp size={18} className="text-sky-600" /> Ringkasan
@@ -226,15 +229,15 @@ export default function DailySalesReport() {
             <div className="grid grid-cols-2 gap-4">
               <div className="bg-sky-50 dark:bg-sky-900/20 rounded-xl p-3 border border-sky-100 dark:border-sky-800">
                 <p className="text-xs text-sky-600 dark:text-sky-400">Total Terjual</p>
-                <p className="text-2xl font-bold text-sky-700 dark:text-sky-300">{salesMonitor?.summary?.totalSold ?? 0}</p>
+                <p className="text-2xl font-bold text-sky-700 dark:text-sky-300">{summary.totalSold}</p>
               </div>
               <div className="bg-sky-50 dark:bg-sky-900/20 rounded-xl p-3 border border-sky-100 dark:border-sky-800">
                 <p className="text-xs text-sky-600 dark:text-sky-400">Total Restock</p>
-                <p className="text-2xl font-bold text-sky-700 dark:text-sky-300">{salesMonitor?.summary?.totalRestocked ?? 0}</p>
+                <p className="text-2xl font-bold text-sky-700 dark:text-sky-300">{summary.totalRestocked}</p>
               </div>
             </div>
           </div>
-        ) : null}
+        )}
 
         {/* Daftar Barang */}
         <div className="bg-white dark:bg-slate-900 border border-sky-100 dark:border-slate-800 shadow-sm rounded-2xl p-5">
@@ -247,7 +250,7 @@ export default function DailySalesReport() {
               <div className="h-14 animate-pulse rounded-xl bg-sky-100 dark:bg-slate-800" />
               <div className="h-14 animate-pulse rounded-xl bg-sky-100 dark:bg-slate-800" />
             </div>
-          ) : activeItems.length === 0 ? (
+          ) : sortedDates.length === 0 ? (
             <div className="text-center py-8 text-sky-600 dark:text-sky-400 border border-dashed border-sky-200 dark:border-slate-700 rounded-xl bg-sky-50/50 dark:bg-slate-950/50">
               Belum ada aktivitas penjualan/stok pada periode ini. <br/>
               <span className="text-xs">(Lakukan Kunjungan SO atau input Restock terlebih dahulu).</span>
@@ -293,16 +296,16 @@ export default function DailySalesReport() {
 
                           <div className="grid grid-cols-3 gap-1 bg-sky-50/50 dark:bg-slate-950 rounded-lg p-2 text-center">
                             <div>
-                              <p className="text-[10px] text-slate-500">Stok Awal</p>
-                              <p className="text-sm font-semibold text-slate-700 dark:text-slate-300">{item.previousStock}</p>
+                              <p className="text-[10px] text-slate-500">Stok Masuk</p>
+                              <p className="text-sm font-semibold text-emerald-600">+{item.restockQuantity}</p>
                             </div>
                             <div className="border-x border-sky-100 dark:border-slate-800">
-                              <p className="text-[10px] text-slate-500">Stok Masuk</p>
-                              <p className="text-sm font-semibold text-sky-600">+{item.restockQuantity}</p>
+                              <p className="text-[10px] text-slate-500">Koreksi</p>
+                              <p className="text-sm font-semibold text-amber-600">{item.stockEntryAdjustment > 0 ? `+${item.stockEntryAdjustment}` : item.stockEntryAdjustment}</p>
                             </div>
                             <div>
-                              <p className="text-[10px] text-slate-500">Stok Akhir (SO)</p>
-                              <p className="text-sm font-semibold text-slate-700 dark:text-slate-300">{item.currentStock}</p>
+                              <p className="text-[10px] text-slate-500">Total Transaksi</p>
+                              <p className="text-sm font-semibold text-slate-700 dark:text-slate-300">{item.entryIds.length}x</p>
                             </div>
                           </div>
                         </li>
