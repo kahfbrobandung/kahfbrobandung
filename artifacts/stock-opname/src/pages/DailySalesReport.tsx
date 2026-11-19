@@ -1,39 +1,21 @@
 import { useState, useMemo } from "react";
 import { Link } from "wouter";
-import { ArrowLeft, TrendingUp, PackageMinus, AlertCircle, Trash2 } from "lucide-react";
+import { ArrowLeft, TrendingUp, PackageMinus, AlertCircle, CalendarDays } from "lucide-react";
 import { useStoreName } from "@/hooks/useStoreName";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/supabase";
 
-type GroupedItem = {
-  store: string;
-  product: string;
+type ProductHistory = {
   barcode: string;
-  previousStock: number;
-  restockQuantity: number;
-  stockEntryAdjustment: number;
-  currentStock: number;
-  soldQuantity: number;
-  latestVisitTime: number;
-  entryIds: string[]; // Menggunakan string karena ID Supabase biasanya UUID
-};
-
-const getLocalDateString = (dateString: string) => {
-  try {
-    const d = new Date(dateString);
-    return d.toLocaleDateString('en-CA'); 
-  } catch {
-    return new Date().toLocaleDateString('en-CA');
-  }
+  product: string;
+  visits: { date: string; qty: number }[];
+  restocks: { date: string; qty: number }[];
 };
 
 export default function DailySalesReport() {
   const [storeName] = useStoreName();
   const activeStore = storeName.trim();
-  const [visibleDatesCount, setVisibleDatesCount] = useState(1);
   
-  const queryClient = useQueryClient();
-
   const [dateRange, setDateRange] = useState(() => {
     const today = new Date();
     const lastMonth = new Date();
@@ -44,124 +26,124 @@ export default function DailySalesReport() {
     };
   });
 
-  // 1. AMBIL DATA LANGSUNG DARI SUPABASE
-  const { data: rawEntries = [], isLoading: monitorLoading, isError } = useQuery({
-    queryKey: ['salesMonitor', activeStore, dateRange.from, dateRange.to],
+  // 1. AMBIL DATA KUNJUNGAN SO & BARANG MASUK DARI SUPABASE
+  const { data: rawData, isLoading, isError } = useQuery({
+    queryKey: ['salesReport', activeStore, dateRange.from, dateRange.to],
     queryFn: async () => {
-      if (!activeStore) return [];
+      if (!activeStore) return { visits: [], restocks: [] };
 
-      // Ambil semua transaksi di toko ini pada rentang tanggal yang dipilih
-      const { data, error } = await supabase
-        .from('stock_entries') // <--- PASTIKAN NAMA TABEL INI SAMA DENGAN DI SUPABASE
-        .select('*')
-        .eq('store', activeStore)
-        .gte('created_at', dateRange.from)
-        .lte('created_at', dateRange.to + 'T23:59:59')
-        .order('created_at', { ascending: true });
+      // Ambil ID Toko berdasarkan nama
+      const { data: storeData } = await supabase
+        .from('stores').select('id').eq('name', activeStore).maybeSingle();
+      if (!storeData) return { visits: [], restocks: [] };
 
-      if (error) throw error;
-      return data || [];
+      // Ambil Kunjungan SO beserta detail barangnya (stocktake_lines)
+      const { data: visits } = await supabase
+        .from('stock_visits')
+        .select(`visited_at, stocktake_lines ( barcode, product, total_quantity )`)
+        .eq('store_id', storeData.id)
+        .gte('visited_at', dateRange.from)
+        .lte('visited_at', dateRange.to + 'T23:59:59')
+        .order('visited_at', { ascending: true });
+
+      // Ambil Barang Masuk
+      const { data: restocks } = await supabase
+        .from('stock_restocks')
+        .select(`received_at, barcode, product, quantity`)
+        .eq('store_id', storeData.id)
+        .gte('received_at', dateRange.from)
+        .lte('received_at', dateRange.to + 'T23:59:59')
+        .order('received_at', { ascending: true });
+
+      return { visits: visits || [], restocks: restocks || [] };
     },
     enabled: !!activeStore,
   });
 
-  // 2. PROSES DATA MENTAH MENJADI LAPORAN (Grouping)
-  const { groupedItems, summary } = useMemo(() => {
-    const groups: Record<string, Record<string, GroupedItem>> = {};
+  // 2. HITUNG PENJUALAN (Stok Awal - Stok Akhir + Barang Masuk)
+  const report = useMemo(() => {
+    if (!rawData) return { totalSold: 0, totalRestocked: 0, items: [] };
+
+    const historyMap = new Map<string, ProductHistory>();
+
+    // Masukkan data kunjungan (SO)
+    rawData.visits.forEach((visit: any) => {
+      const date = visit.visited_at;
+      visit.stocktake_lines?.forEach((line: any) => {
+        if (!historyMap.has(line.barcode)) {
+          historyMap.set(line.barcode, { barcode: line.barcode, product: line.product, visits: [], restocks: [] });
+        }
+        historyMap.get(line.barcode)!.visits.push({ date, qty: line.total_quantity });
+      });
+    });
+
+    // Masukkan data restock
+    rawData.restocks.forEach((restock: any) => {
+      if (!historyMap.has(restock.barcode)) {
+        historyMap.set(restock.barcode, { barcode: restock.barcode, product: restock.product, visits: [], restocks: [] });
+      }
+      historyMap.get(restock.barcode)!.restocks.push({ date: restock.received_at, qty: restock.quantity });
+    });
+
     let totalSold = 0;
     let totalRestocked = 0;
+    const reportItems: any[] = [];
 
-    rawEntries.forEach((entry: any) => {
-      const dateStr = getLocalDateString(entry.created_at);
-      if (!groups[dateStr]) groups[dateStr] = {};
+    // Proses hitung per produk
+    historyMap.forEach((product) => {
+      // Butuh minimal 2 kunjungan untuk melihat selisih penjualan
+      if (product.visits.length < 2) return; 
+
+      let productSoldTotal = 0;
+      let productRestockedTotal = 0;
       
-      const key = entry.barcode;
-      if (!groups[dateStr][key]) {
-        groups[dateStr][key] = {
-          store: entry.store,
-          product: entry.product,
-          barcode: entry.barcode,
-          previousStock: 0, // Bisa disesuaikan jika ada logika saldo awal
-          restockQuantity: 0,
-          stockEntryAdjustment: 0,
-          currentStock: 0,
-          soldQuantity: 0,
-          latestVisitTime: new Date(entry.created_at).getTime(),
-          entryIds: [],
-        };
-      }
+      // Urutkan kunjungan berdasarkan tanggal (terlama ke terbaru)
+      const sortedVisits = product.visits.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
 
-      const qty = Number(entry.quantity) || 0;
-      const item = groups[dateStr][key];
+      // Hitung selisih antar kunjungan
+      for (let i = 0; i < sortedVisits.length - 1; i++) {
+        const startVisit = sortedVisits[i];
+        const endVisit = sortedVisits[i + 1];
 
-      // Kategorikan transaksi
-      if (['Penjualan'].includes(entry.transaction)) {
-        item.soldQuantity += qty;
-        totalSold += qty;
-      } else if (['Input Stok', 'Stock Awal', 'Pembelian', 'Retur'].includes(entry.transaction)) {
-        item.restockQuantity += qty;
-        totalRestocked += qty;
-      } else if (entry.transaction.includes('Koreksi')) {
-        item.stockEntryAdjustment += entry.transaction.includes('+') ? qty : -qty;
-      }
+        // Cari barang masuk di antara 2 kunjungan ini
+        let restockBetween = 0;
+        product.restocks.forEach(r => {
+          const rTime = new Date(r.date).getTime();
+          if (rTime >= new Date(startVisit.date).getTime() && rTime <= new Date(endVisit.date).getTime()) {
+            restockBetween += r.qty;
+          }
+        });
 
-      // Simpan ID untuk fitur hapus
-      if (entry.id && !item.entryIds.includes(entry.id)) {
-        item.entryIds.push(entry.id);
-      }
-      
-      // Update waktu transaksi terakhir
-      const entryTime = new Date(entry.created_at).getTime();
-      if (entryTime >= item.latestVisitTime) {
-        item.latestVisitTime = entryTime;
+        // Rumus Penjualan: (Stok Awal + Barang Masuk) - Stok Akhir
+        const sold = (startVisit.qty + restockBetween) - endVisit.qty;
+        
+        if (sold > 0) {
+           productSoldTotal += sold;
+           totalSold += sold;
+           totalRestocked += restockBetween;
+
+           reportItems.push({
+             date: endVisit.date,
+             product: product.product,
+             barcode: product.barcode,
+             startQty: startVisit.qty,
+             restock: restockBetween,
+             endQty: endVisit.qty,
+             sold: sold
+           });
+        }
       }
     });
 
-    const result: Record<string, GroupedItem[]> = {};
-    Object.keys(groups).forEach(date => {
-      result[date] = Object.values(groups[date]);
-    });
+    // Urutkan laporan dari tanggal terbaru
+    reportItems.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
-    return { groupedItems: result, summary: { totalSold, totalRestocked } };
-  }, [rawEntries]);
-
-  const sortedDates = useMemo(() => {
-    return Object.keys(groupedItems).sort((a, b) => b.localeCompare(a));
-  }, [groupedItems]);
-
-  const visibleDates = sortedDates.slice(0, visibleDatesCount);
+    return { totalSold, totalRestocked, items: reportItems };
+  }, [rawData]);
 
   const formatDateIndo = (dateString: string) => {
-    const d = new Date(`${dateString}T00:00:00`); 
+    const d = new Date(dateString); 
     return d.toLocaleDateString("id-ID", { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric' });
-  };
-
-  // 3. FUNGSI HAPUS LANGSUNG KE SUPABASE
-  const handleDeleteItem = async (item: GroupedItem) => {
-    if (item.entryIds.length === 0) {
-      alert("Gagal: Data ID tidak ditemukan.");
-      return;
-    }
-
-    const confirmDelete = window.confirm(`Hapus semua data penjualan/stok untuk produk "${item.product}" pada tanggal ini?`);
-    if (!confirmDelete) return;
-
-    try {
-      // Hapus semua baris transaksi yang berhubungan dengan item ini
-      const { error } = await supabase
-        .from('stock_entries')
-        .delete()
-        .in('id', item.entryIds);
-
-      if (error) throw error;
-
-      // Refresh data otomatis
-      queryClient.invalidateQueries({ queryKey: ['salesMonitor'] });
-      alert("Data berhasil dihapus!");
-    } catch (error) {
-      console.error("Gagal menghapus:", error);
-      alert("Terjadi kesalahan saat menghapus data.");
-    }
   };
 
   return (
@@ -185,29 +167,11 @@ export default function DailySalesReport() {
         <div className="bg-white dark:bg-slate-900 border border-sky-100 dark:border-slate-800 shadow-sm rounded-2xl p-4 flex gap-3">
           <div className="flex-1">
             <label className="text-xs font-semibold text-sky-700 dark:text-sky-500 block mb-1">Dari</label>
-            <input
-              type="date"
-              value={dateRange.from}
-              max={dateRange.to} 
-              onChange={(e) => {
-                setDateRange({ ...dateRange, from: e.target.value });
-                setVisibleDatesCount(1);
-              }}
-              className="w-full px-3 py-2 bg-sky-50 dark:bg-slate-950 border border-sky-200 dark:border-slate-800 rounded-xl text-sm outline-none focus:ring-2 focus:ring-sky-500 text-slate-800 dark:text-slate-100"
-            />
+            <input type="date" value={dateRange.from} max={dateRange.to} onChange={(e) => setDateRange({ ...dateRange, from: e.target.value })} className="w-full px-3 py-2 bg-sky-50 dark:bg-slate-950 border border-sky-200 rounded-xl text-sm outline-none" />
           </div>
           <div className="flex-1">
             <label className="text-xs font-semibold text-sky-700 dark:text-sky-500 block mb-1">Sampai</label>
-            <input
-              type="date"
-              value={dateRange.to}
-              min={dateRange.from} 
-              onChange={(e) => {
-                setDateRange({ ...dateRange, to: e.target.value });
-                setVisibleDatesCount(1);
-              }}
-              className="w-full px-3 py-2 bg-sky-50 dark:bg-slate-950 border border-sky-200 dark:border-slate-800 rounded-xl text-sm outline-none focus:ring-2 focus:ring-sky-500 text-slate-800 dark:text-slate-100"
-            />
+            <input type="date" value={dateRange.to} min={dateRange.from} onChange={(e) => setDateRange({ ...dateRange, to: e.target.value })} className="w-full px-3 py-2 bg-sky-50 dark:bg-slate-950 border border-sky-200 rounded-xl text-sm outline-none" />
           </div>
         </div>
 
@@ -218,125 +182,70 @@ export default function DailySalesReport() {
           </div>
         )}
 
-        {/* Ringkasan Penjualan */}
-        {monitorLoading ? (
+        {isLoading ? (
            <div className="h-32 animate-pulse rounded-2xl bg-sky-100 dark:bg-slate-800" />
         ) : (
           <div className="bg-white dark:bg-slate-900 border border-sky-100 dark:border-slate-800 shadow-sm rounded-2xl p-5">
             <h3 className="font-serif text-lg font-bold mb-4 flex items-center gap-2 text-slate-800 dark:text-slate-100">
-              <TrendingUp size={18} className="text-sky-600" /> Ringkasan
+              <TrendingUp size={18} className="text-sky-600" /> Ringkasan Penjualan
             </h3>
             <div className="grid grid-cols-2 gap-4">
-              <div className="bg-sky-50 dark:bg-sky-900/20 rounded-xl p-3 border border-sky-100 dark:border-sky-800">
-                <p className="text-xs text-sky-600 dark:text-sky-400">Total Terjual</p>
-                <p className="text-2xl font-bold text-sky-700 dark:text-sky-300">{summary.totalSold}</p>
+              <div className="bg-sky-50 rounded-xl p-3 border border-sky-100">
+                <p className="text-xs text-sky-600 font-semibold">Total Terjual</p>
+                <p className="text-2xl font-bold text-sky-700">{report.totalSold} <span className="text-sm font-normal">pcs</span></p>
               </div>
-              <div className="bg-sky-50 dark:bg-sky-900/20 rounded-xl p-3 border border-sky-100 dark:border-sky-800">
-                <p className="text-xs text-sky-600 dark:text-sky-400">Total Restock</p>
-                <p className="text-2xl font-bold text-sky-700 dark:text-sky-300">{summary.totalRestocked}</p>
+              <div className="bg-emerald-50 rounded-xl p-3 border border-emerald-100">
+                <p className="text-xs text-emerald-600 font-semibold">Total Barang Masuk</p>
+                <p className="text-2xl font-bold text-emerald-700">{report.totalRestocked} <span className="text-sm font-normal">pcs</span></p>
               </div>
             </div>
           </div>
         )}
 
-        {/* Daftar Barang */}
         <div className="bg-white dark:bg-slate-900 border border-sky-100 dark:border-slate-800 shadow-sm rounded-2xl p-5">
           <h3 className="font-serif text-lg font-bold mb-4 flex items-center gap-2 text-slate-800 dark:text-slate-100">
-            <PackageMinus size={18} className="text-sky-600" /> Aktivitas Stok & Penjualan
+            <PackageMinus size={18} className="text-sky-600" /> Detail Penjualan
           </h3>
           
-          {monitorLoading ? (
-            <div className="space-y-3">
-              <div className="h-14 animate-pulse rounded-xl bg-sky-100 dark:bg-slate-800" />
-              <div className="h-14 animate-pulse rounded-xl bg-sky-100 dark:bg-slate-800" />
-            </div>
-          ) : sortedDates.length === 0 ? (
-            <div className="text-center py-8 text-sky-600 dark:text-sky-400 border border-dashed border-sky-200 dark:border-slate-700 rounded-xl bg-sky-50/50 dark:bg-slate-950/50">
-              Belum ada aktivitas penjualan/stok pada periode ini. <br/>
-              <span className="text-xs">(Lakukan Kunjungan SO atau input Restock terlebih dahulu).</span>
+          {isLoading ? (
+            <div className="h-20 animate-pulse bg-sky-100 rounded-xl" />
+          ) : report.items.length === 0 ? (
+            <div className="text-center py-8 text-sky-600 border border-dashed border-sky-200 rounded-xl bg-sky-50/50">
+              Belum ada penjualan terdeteksi. <br/>
+              <span className="text-xs text-slate-500 mt-2 block">(Lakukan minimal 2 Kunjungan SO untuk melihat selisih penjualan).</span>
             </div>
           ) : (
-            <>
-              <div className="space-y-8">
-                {visibleDates.map((date) => (
-                  <div key={date}>
-                    <div className="sticky top-[80px] z-10 bg-white/95 dark:bg-slate-900/95 backdrop-blur-sm py-2 mb-3 border-b border-sky-100 dark:border-slate-800">
-                      <h4 className="font-bold text-slate-800 dark:text-slate-100 uppercase tracking-wide text-xs flex items-center gap-2">
-                        <span className="w-2 h-2 rounded-full bg-sky-500 block"></span>
-                        {formatDateIndo(date)}
-                      </h4>
+            <ul className="space-y-3">
+              {report.items.map((item, idx) => (
+                <li key={idx} className="border border-sky-100 rounded-xl p-4 shadow-sm bg-white">
+                  <div className="flex justify-between items-start mb-2">
+                    <div>
+                      <p className="text-sm font-bold text-slate-800">{item.product}</p>
+                      <p className="text-[10px] text-sky-600 font-mono">{item.barcode}</p>
+                      <p className="text-[10px] text-slate-500 mt-1 flex items-center gap-1"><CalendarDays size={10}/> {formatDateIndo(item.date)}</p>
                     </div>
-
-                    <ul className="space-y-4">
-                      {groupedItems[date].map((item, index) => (
-                        <li key={`${item.barcode}-${index}`} className="border border-sky-100 dark:border-slate-800 rounded-xl p-4 shadow-sm bg-white dark:bg-slate-900 hover:border-sky-300 dark:hover:border-sky-700 transition-colors">
-                          
-                          <div className="flex justify-between items-start mb-3">
-                            <div className="pr-2">
-                              <p className="text-sm font-bold text-slate-800 dark:text-slate-100">{item.product}</p>
-                              <p className="text-[11px] text-sky-600 dark:text-sky-400 font-mono">{item.barcode}</p>
-                            </div>
-                            
-                            <div className="text-right shrink-0 flex items-start gap-2">
-                              <div>
-                                <p className="text-[10px] uppercase tracking-wider font-semibold text-sky-600 dark:text-sky-400">Terjual</p>
-                                <p className="text-2xl font-bold text-sky-600 dark:text-sky-400">
-                                  {item.soldQuantity} <span className="text-xs font-normal text-sky-500/70">pcs</span>
-                                </p>
-                              </div>
-                              <button
-                                onClick={() => handleDeleteItem(item)}
-                                className="p-1.5 text-red-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-md transition-colors"
-                                title="Hapus Data"
-                              >
-                                <Trash2 size={16} />
-                              </button>
-                            </div>
-                          </div>
-
-                          <div className="grid grid-cols-3 gap-1 bg-sky-50/50 dark:bg-slate-950 rounded-lg p-2 text-center">
-                            <div>
-                              <p className="text-[10px] text-slate-500">Stok Masuk</p>
-                              <p className="text-sm font-semibold text-emerald-600">+{item.restockQuantity}</p>
-                            </div>
-                            <div className="border-x border-sky-100 dark:border-slate-800">
-                              <p className="text-[10px] text-slate-500">Koreksi</p>
-                              <p className="text-sm font-semibold text-amber-600">{item.stockEntryAdjustment > 0 ? `+${item.stockEntryAdjustment}` : item.stockEntryAdjustment}</p>
-                            </div>
-                            <div>
-                              <p className="text-[10px] text-slate-500">Total Transaksi</p>
-                              <p className="text-sm font-semibold text-slate-700 dark:text-slate-300">{item.entryIds.length}x</p>
-                            </div>
-                          </div>
-                        </li>
-                      ))}
-                    </ul>
+                    <div className="text-right">
+                      <p className="text-[10px] uppercase font-bold text-sky-600">Terjual</p>
+                      <p className="text-xl font-bold text-sky-600">{item.sold} <span className="text-xs font-normal">pcs</span></p>
+                    </div>
                   </div>
-                ))}
-              </div>
-
-              <div className="flex gap-2 mt-6 border-t border-sky-100 dark:border-slate-800 pt-4">
-                {visibleDatesCount > 1 && (
-                  <button
-                    type="button"
-                    onClick={() => setVisibleDatesCount((prev) => Math.max(1, prev - 1))}
-                    className="flex-1 py-2.5 text-sm font-semibold text-slate-500 border border-slate-200 dark:border-slate-700 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
-                  >
-                    Muat Lebih Sedikit
-                  </button>
-                )}
-                
-                {visibleDatesCount < sortedDates.length && (
-                  <button
-                    type="button"
-                    onClick={() => setVisibleDatesCount((prev) => prev + 1)}
-                    className="flex-1 py-2.5 text-sm font-semibold text-sky-600 border border-sky-300 dark:border-sky-700 rounded-xl hover:bg-sky-50 dark:hover:bg-sky-900/30 transition-colors"
-                  >
-                    Muat Tanggal Sebelumnya
-                  </button>
-                )}
-              </div>
-            </>
+                  <div className="grid grid-cols-3 gap-1 bg-sky-50 rounded-lg p-2 text-center text-xs mt-2">
+                    <div>
+                      <p className="text-[10px] text-slate-500">SO Awal</p>
+                      <p className="font-bold">{item.startQty}</p>
+                    </div>
+                    <div className="border-x border-sky-200">
+                      <p className="text-[10px] text-slate-500">Masuk</p>
+                      <p className="font-bold text-emerald-600">+{item.restock}</p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] text-slate-500">SO Akhir</p>
+                      <p className="font-bold">{item.endQty}</p>
+                    </div>
+                  </div>
+                </li>
+              ))}
+            </ul>
           )}
         </div>
       </main>
