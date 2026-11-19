@@ -1,20 +1,28 @@
 import { useState, useMemo } from "react";
 import { Link } from "wouter";
-import { ArrowLeft, TrendingUp, PackageMinus, AlertCircle, CalendarDays } from "lucide-react";
+import { ArrowLeft, TrendingUp, PackageMinus, AlertCircle, CalendarDays, Trash2 } from "lucide-react";
 import { useStoreName } from "@/hooks/useStoreName";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/supabase";
+import { useToast } from "@/hooks/use-toast";
 
-type ProductHistory = {
-  barcode: string;
+type ReportItem = {
+  date: string;
   product: string;
-  visits: { date: string; qty: number }[];
-  restocks: { date: string; qty: number }[];
+  barcode: string;
+  startQty: number;
+  restock: number;
+  endQty: number;
+  sold: number;
+  startVisitId: string;
+  endVisitId: string;
 };
 
 export default function DailySalesReport() {
   const [storeName] = useStoreName();
   const activeStore = storeName.trim();
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
   
   const [dateRange, setDateRange] = useState(() => {
     const today = new Date();
@@ -37,10 +45,10 @@ export default function DailySalesReport() {
         .from('stores').select('id').eq('name', activeStore).maybeSingle();
       if (!storeData) return { visits: [], restocks: [] };
 
-      // Ambil Kunjungan SO beserta detail barangnya (stocktake_lines)
+      // Ambil Kunjungan SO beserta detail barangnya
       const { data: visits } = await supabase
         .from('stock_visits')
-        .select(`visited_at, stocktake_lines ( barcode, product, total_quantity )`)
+        .select(`id, visited_at, stocktake_lines ( barcode, product, total_quantity )`)
         .eq('store_id', storeData.id)
         .gte('visited_at', dateRange.from)
         .lte('visited_at', dateRange.to + 'T23:59:59')
@@ -49,7 +57,7 @@ export default function DailySalesReport() {
       // Ambil Barang Masuk
       const { data: restocks } = await supabase
         .from('stock_restocks')
-        .select(`received_at, barcode, product, quantity`)
+        .select(`id, received_at, barcode, product, quantity`)
         .eq('store_id', storeData.id)
         .gte('received_at', dateRange.from)
         .lte('received_at', dateRange.to + 'T23:59:59')
@@ -62,18 +70,19 @@ export default function DailySalesReport() {
 
   // 2. HITUNG PENJUALAN (Stok Awal - Stok Akhir + Barang Masuk)
   const report = useMemo(() => {
-    if (!rawData) return { totalSold: 0, totalRestocked: 0, items: [] };
+    if (!rawData) return { totalSold: 0, totalRestocked: 0, items: [] as ReportItem[] };
 
-    const historyMap = new Map<string, ProductHistory>();
+    const historyMap = new Map<string, any>();
 
     // Masukkan data kunjungan (SO)
     rawData.visits.forEach((visit: any) => {
       const date = visit.visited_at;
+      const visitId = visit.id;
       visit.stocktake_lines?.forEach((line: any) => {
         if (!historyMap.has(line.barcode)) {
           historyMap.set(line.barcode, { barcode: line.barcode, product: line.product, visits: [], restocks: [] });
         }
-        historyMap.get(line.barcode)!.visits.push({ date, qty: line.total_quantity });
+        historyMap.get(line.barcode)!.visits.push({ date, qty: line.total_quantity, visitId });
       });
     });
 
@@ -87,27 +96,20 @@ export default function DailySalesReport() {
 
     let totalSold = 0;
     let totalRestocked = 0;
-    const reportItems: any[] = [];
+    const reportItems: ReportItem[] = [];
 
     // Proses hitung per produk
     historyMap.forEach((product) => {
-      // Butuh minimal 2 kunjungan untuk melihat selisih penjualan
       if (product.visits.length < 2) return; 
 
-      let productSoldTotal = 0;
-      let productRestockedTotal = 0;
-      
-      // Urutkan kunjungan berdasarkan tanggal (terlama ke terbaru)
-      const sortedVisits = product.visits.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+      const sortedVisits = product.visits.sort((a: any, b: any) => new Date(a.date).getTime() - new Date(b.date).getTime());
 
-      // Hitung selisih antar kunjungan
       for (let i = 0; i < sortedVisits.length - 1; i++) {
         const startVisit = sortedVisits[i];
         const endVisit = sortedVisits[i + 1];
 
-        // Cari barang masuk di antara 2 kunjungan ini
         let restockBetween = 0;
-        product.restocks.forEach(r => {
+        product.restocks.forEach((r: any) => {
           const rTime = new Date(r.date).getTime();
           if (rTime >= new Date(startVisit.date).getTime() && rTime <= new Date(endVisit.date).getTime()) {
             restockBetween += r.qty;
@@ -118,7 +120,6 @@ export default function DailySalesReport() {
         const sold = (startVisit.qty + restockBetween) - endVisit.qty;
         
         if (sold > 0) {
-           productSoldTotal += sold;
            totalSold += sold;
            totalRestocked += restockBetween;
 
@@ -129,17 +130,33 @@ export default function DailySalesReport() {
              startQty: startVisit.qty,
              restock: restockBetween,
              endQty: endVisit.qty,
-             sold: sold
+             sold: sold,
+             startVisitId: startVisit.visitId,
+             endVisitId: endVisit.visitId
            });
         }
       }
     });
 
-    // Urutkan laporan dari tanggal terbaru
     reportItems.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
     return { totalSold, totalRestocked, items: reportItems };
   }, [rawData]);
+
+  // 3. FUNGSI HAPUS DATA KUNJUNGAN
+  const handleDelete = async (visitId: string) => {
+    if (!window.confirm("Hapus data kunjungan SO ini? Laporan akan dihitung ulang.")) return;
+    try {
+      await supabase.from('stocktake_lines').delete().eq('visit_id', visitId);
+      const { error } = await supabase.from('stock_visits').delete().eq('id', visitId);
+      if (error) throw error;
+      
+      queryClient.invalidateQueries({ queryKey: ['salesReport'] });
+      toast({ title: "Berhasil", description: "Data kunjungan dihapus." });
+    } catch (error: any) {
+      toast({ title: "Gagal menghapus", description: error.message, variant: "destructive" });
+    }
+  };
 
   const formatDateIndo = (dateString: string) => {
     const d = new Date(dateString); 
@@ -212,14 +229,14 @@ export default function DailySalesReport() {
           ) : report.items.length === 0 ? (
             <div className="text-center py-8 text-sky-600 border border-dashed border-sky-200 rounded-xl bg-sky-50/50">
               Belum ada penjualan terdeteksi. <br/>
-              <span className="text-xs text-slate-500 mt-2 block">(Lakukan minimal 2 Kunjungan SO untuk melihat selisih penjualan).</span>
+              <span className="text-xs text-slate-500 mt-2 block">(Lakukan minimal 2 Kunjungan SO dengan stok yang berbeda untuk melihat selisih penjualan).</span>
             </div>
           ) : (
             <ul className="space-y-3">
               {report.items.map((item, idx) => (
-                <li key={idx} className="border border-sky-100 rounded-xl p-4 shadow-sm bg-white">
+                <li key={idx} className="border border-sky-100 rounded-xl p-4 shadow-sm bg-white relative">
                   <div className="flex justify-between items-start mb-2">
-                    <div>
+                    <div className="pr-8">
                       <p className="text-sm font-bold text-slate-800">{item.product}</p>
                       <p className="text-[10px] text-sky-600 font-mono">{item.barcode}</p>
                       <p className="text-[10px] text-slate-500 mt-1 flex items-center gap-1"><CalendarDays size={10}/> {formatDateIndo(item.date)}</p>
@@ -229,6 +246,16 @@ export default function DailySalesReport() {
                       <p className="text-xl font-bold text-sky-600">{item.sold} <span className="text-xs font-normal">pcs</span></p>
                     </div>
                   </div>
+                  
+                  {/* TOMBOL HAPUS */}
+                  <button
+                    onClick={() => handleDelete(item.endVisitId)}
+                    className="absolute top-3 right-3 p-1.5 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors"
+                    title="Hapus data SO ini"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+
                   <div className="grid grid-cols-3 gap-1 bg-sky-50 rounded-lg p-2 text-center text-xs mt-2">
                     <div>
                       <p className="text-[10px] text-slate-500">SO Awal</p>
