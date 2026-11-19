@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useStoreName } from '@/hooks/useStoreName';
-import { useProducts } from '@/hooks/useProducts'; // <-- Tambahan
-import { ProductManager } from '@/components/ProductManager'; // <-- Tambahan
+import { useProducts } from '@/hooks/useProducts';
+import { ProductManager } from '@/components/ProductManager';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { useToast } from '@/hooks/use-toast';
 import { Box, LogOut, Package, Store, Plus, X } from 'lucide-react';
@@ -15,7 +15,7 @@ export default function Home() {
   const [, setLocation] = useLocation();
   const queryClient = useQueryClient();
   
-  // Panggil Hook Produk
+  // Panggil Hook Produk dari Supabase
   const { products, addProduct, removeProduct, updateProduct, replaceProducts } = useProducts();
 
   const [isAddStoreOpen, setIsAddStoreOpen] = useState(false);
@@ -140,6 +140,8 @@ export default function Home() {
       </header>
 
       <main className="w-full max-w-md px-4 flex flex-col gap-5">
+        
+        {/* PILIH TOKO */}
         <div className="bg-white dark:bg-slate-900 border border-sky-100 dark:border-slate-800 shadow-sm rounded-2xl p-5">
           <div className="space-y-4">
             <div className="grid grid-cols-1 gap-3">
@@ -157,6 +159,17 @@ export default function Home() {
           </div>
         </div>
 
+        {/* --- MENU KELOLA PRODUK MASTER (DIPINDAH KE ATAS) --- */}
+        <ProductManager 
+          products={products} 
+          onAdd={addProduct} 
+          onRemove={removeProduct} 
+          onUpdate={updateProduct} 
+          onReplace={replaceProducts} 
+        />
+        {/* ------------------------------------------------------ */}
+
+        {/* STOK PRODUK SAAT INI */}
         <section className="bg-white dark:bg-slate-900 border border-sky-100 dark:border-slate-800 shadow-sm rounded-2xl p-5">
           <h2 className="font-serif text-lg font-bold flex items-center gap-2 mb-4 text-slate-800 dark:text-slate-100">
             <Package size={18} className="text-sky-600" /> Stok Produk Saat Ini
@@ -179,16 +192,6 @@ export default function Home() {
             </div>
           )}
         </section>
-
-        {/* --- MENU KELOLA PRODUK MASTER DIMUNCULKAN KEMBALI DI SINI --- */}
-        <ProductManager 
-          products={products} 
-          onAdd={addProduct} 
-          onRemove={removeProduct} 
-          onUpdate={updateProduct} 
-          onReplace={replaceProducts} 
-        />
-        {/* ----------------------------------------------------------- */}
 
       </main>
 
