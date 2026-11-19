@@ -29,20 +29,14 @@ export default defineConfig({
         orientation: 'portrait',
         icons: [
           {
-            src: 'pwa-192x192.png', // Ikon aplikasi
+            src: 'favicon.png', // Menggunakan favicon yang sudah ada di folder public
             sizes: '192x192',
             type: 'image/png'
           },
           {
-            src: 'pwa-512x512.png', // Ikon aplikasi
+            src: 'favicon.png', // Menggunakan favicon yang sudah ada di folder public
             sizes: '512x512',
             type: 'image/png'
-          },
-          {
-            src: 'pwa-512x512.png',
-            sizes: '512x512',
-            type: 'image/png',
-            purpose: 'any maskable'
           }
         ]
       },
