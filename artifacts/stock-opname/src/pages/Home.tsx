@@ -1,5 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useStoreName } from '@/hooks/useStoreName';
+import { useProducts } from '@/hooks/useProducts'; // <-- Tambahan
+import { ProductManager } from '@/components/ProductManager'; // <-- Tambahan
 import { ThemeToggle } from '@/components/theme-toggle';
 import { useToast } from '@/hooks/use-toast';
 import { Box, LogOut, Package, Store, Plus, X } from 'lucide-react';
@@ -12,6 +14,9 @@ export default function Home() {
   const { toast } = useToast();
   const [, setLocation] = useLocation();
   const queryClient = useQueryClient();
+  
+  // Panggil Hook Produk
+  const { products, addProduct, removeProduct, updateProduct, replaceProducts } = useProducts();
 
   const [isAddStoreOpen, setIsAddStoreOpen] = useState(false);
   const [newStoreName, setNewStoreName] = useState('');
@@ -174,6 +179,17 @@ export default function Home() {
             </div>
           )}
         </section>
+
+        {/* --- MENU KELOLA PRODUK MASTER DIMUNCULKAN KEMBALI DI SINI --- */}
+        <ProductManager 
+          products={products} 
+          onAdd={addProduct} 
+          onRemove={removeProduct} 
+          onUpdate={updateProduct} 
+          onReplace={replaceProducts} 
+        />
+        {/* ----------------------------------------------------------- */}
+
       </main>
 
       {isAddStoreOpen && (
