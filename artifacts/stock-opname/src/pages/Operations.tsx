@@ -3,20 +3,7 @@ import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
 import { Link, useLocation } from "wouter";
-import { useQueryClient } from "@tanstack/react-query";
-import {
-  getGetSalesActivityQueryKey,
-  getGetSalesMonitorQueryKey,
-  getListStockBalancesQueryKey,
-  getListStoresQueryKey,
-  useCreateStockRestock,
-  useCreateStockVisit,
-  useDeleteStockRestock,
-  useDeleteStockVisit,
-  useListStores,
-  type StockRestock,
-  type StocktakeLineInput,
-} from "@workspace/api-client-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useProducts } from "@/hooks/useProducts";
 import { useStoreName } from "@/hooks/useStoreName";
 import { useToast } from "@/hooks/use-toast";
@@ -26,8 +13,6 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "
 import { ArrowLeft, Boxes, Camera, ClipboardCheck, PackagePlus, Plus, Trash2, ShoppingCart, CheckCircle2, Search, WifiOff, RefreshCw } from "lucide-react";
 
 const OFFLINE_QUEUE_KEY = "erlangga_offline_queue";
-
-const API_BASE_URL = "https://kahfbrobandung-7qyj.vercel.app";
 
 const visitCartItemSchema = z.object({
   barcode: z.string().trim().min(1, "Barcode wajib diisi."),
@@ -94,7 +79,6 @@ export default function Operations() {
   const [visitDisplayLimit, setVisitDisplayLimit] = useState(5);
   const [restockDisplayLimit, setRestockDisplayLimit] = useState(5);
 
-  // STATE BARU UNTUK RIWAYAT (Langsung dari Supabase)
   const [visitHistory, setVisitHistory] = useState<any[]>([]);
   const [isVisitLoading, setIsVisitLoading] = useState(true);
   const [restockHistory, setRestockHistory] = useState<any[]>([]);
@@ -105,14 +89,29 @@ export default function Operations() {
   const visitClientId = useRef<string | null>(null);
   const restockClientId = useRef<string | null>(null);
 
-  const storesQuery = useListStores({ query: { queryKey: getListStoresQueryKey(), staleTime: 5 * 60 * 1000 } });
+  // 1. AMBIL DAFTAR TOKO LANGSUNG DARI SUPABASE
+  const { data: storesData = [] } = useQuery({
+    queryKey: ['storesList'],
+    queryFn: async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.user?.id) return [];
+      const { data } = await supabase.from('stores').select('name').eq('user_id', session.user.id).order('name');
+      return data || [];
+    }
+  });
 
-  const createVisit = useCreateStockVisit();
-  const createRestock = useCreateStockRestock();
-  const deleteVisit = useDeleteStockVisit();
-  const deleteRestock = useDeleteStockRestock();
+  // FUNGSI HELPER: Dapatkan store_id dari nama toko aktif
+  const getStoreId = async () => {
+    if (!activeStore) return null;
+    const { data } = await supabase
+      .from('stores')
+      .select('id')
+      .eq('name', activeStore) // Gunakan 'name' bukan 'normalizedName' agar sesuai dengan Home.tsx
+      .maybeSingle();
+    return data?.id || null;
+  };
 
-  // FUNGSI FETCH LANGSUNG DARI SUPABASE (Bypass API Client yang Error)
+  // 2. FETCH RIWAYAT DARI SUPABASE
   const fetchVisitHistory = async () => {
     if (!activeStore) {
       setVisitHistory([]);
@@ -120,16 +119,8 @@ export default function Operations() {
       return;
     }
     setIsVisitLoading(true);
-    const { data: session } = await supabase.auth.getSession();
-    if (!session?.session?.user?.id) return;
-
-    const { data: storeData } = await supabase
-      .from('stores')
-      .select('id')
-      .eq('normalizedName', activeStore.toLowerCase())
-      .maybeSingle();
-
-    if (!storeData) {
+    const storeId = await getStoreId();
+    if (!storeId) {
       setVisitHistory([]);
       setIsVisitLoading(false);
       return;
@@ -139,17 +130,16 @@ export default function Operations() {
       .from('stock_visits')
       .select(`
         id, client_id, visited_at, created_at,
-        stores ( name ),
         stocktake_lines ( id, product, barcode, display_quantity, secondary_display_quantity, warehouse_quantity, total_quantity )
       `)
-      .eq('store_id', storeData.id)
+      .eq('store_id', storeId)
       .order('visited_at', { ascending: false })
       .limit(50);
 
     if (visits) {
       setVisitHistory(visits.map((v: any) => ({
         ...v,
-        store: v.stores?.name || activeStore,
+        store: activeStore,
         lines: v.stocktake_lines || []
       })));
     }
@@ -163,16 +153,8 @@ export default function Operations() {
       return;
     }
     setIsRestockLoading(true);
-    const { data: session } = await supabase.auth.getSession();
-    if (!session?.session?.user?.id) return;
-
-    const { data: storeData } = await supabase
-      .from('stores')
-      .select('id')
-      .eq('normalizedName', activeStore.toLowerCase())
-      .maybeSingle();
-
-    if (!storeData) {
+    const storeId = await getStoreId();
+    if (!storeId) {
       setRestockHistory([]);
       setIsRestockLoading(false);
       return;
@@ -180,16 +162,16 @@ export default function Operations() {
 
     const { data: restocks } = await supabase
       .from('stock_restocks')
-      .select(`*, stores ( name )`)
-      .eq('store_id', storeData.id)
+      .select(`*`)
+      .eq('store_id', storeId)
       .order('received_at', { ascending: false })
       .limit(100);
 
     if (restocks) {
       setRestockHistory(restocks.map((r: any) => ({
         ...r,
-        store: r.stores?.name || activeStore,
-        effectiveQuantity: r.invoice_quantity ?? r.quantity
+        store: activeStore,
+        effectiveQuantity: r.quantity
       })));
     }
     setIsRestockLoading(false);
@@ -253,13 +235,10 @@ export default function Operations() {
   const refreshAffectedData = () => {
     fetchVisitHistory();
     fetchRestockHistory();
-    queryClient.invalidateQueries({ queryKey: getListStockBalancesQueryKey() });
-    queryClient.invalidateQueries({ queryKey: getListStoresQueryKey() });
-    queryClient.invalidateQueries({ queryKey: getGetSalesMonitorQueryKey() });
-    queryClient.invalidateQueries({ queryKey: getGetSalesActivityQueryKey() });
+    queryClient.invalidateQueries(); // Refresh semua data di halaman lain (Home, Dashboard)
   };
 
-  // --- LOGIKA OFFLINE MODE ---
+  // --- LOGIKA OFFLINE MODE (LANGSUNG KE SUPABASE) ---
   const updatePendingCount = () => {
     try {
       const queue: OfflineAction[] = JSON.parse(localStorage.getItem(OFFLINE_QUEUE_KEY) || "[]");
@@ -278,25 +257,53 @@ export default function Operations() {
     if (queue.length === 0) return;
 
     const { data: { session } } = await supabase.auth.getSession();
-    if (!session?.access_token) return;
+    if (!session?.user?.id) return;
 
     isSyncingRef.current = true;
     setIsSyncing(true);
 
     try {
-      toast({ title: "Menyinkronkan data offline...", description: `Mengirim ${queue.length} data ke server.` });
+      toast({ title: "Menyinkronkan data offline...", description: `Mengirim ${queue.length} data ke database.` });
       const remainingQueue: OfflineAction[] = [];
-      const authHeader = `Bearer ${session.access_token}`;
 
       for (const action of queue) {
         try {
-          const endpoint = action.type === "visit" ? "/api/stock-visits" : "/api/stock-restocks";
-          const res = await fetch(`${API_BASE_URL}${endpoint}`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json", Authorization: authHeader },
-            body: JSON.stringify(action.data),
-          });
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const storeId = await getStoreId();
+          if (!storeId) throw new Error("Toko tidak ditemukan");
+
+          if (action.type === "visit") {
+            const { data: visitData, error: visitErr } = await supabase.from('stock_visits').insert({
+              store_id: storeId,
+              visited_at: action.data.visitedAt,
+              client_id: action.data.clientId,
+              user_id: session.user.id
+            }).select().single();
+            
+            if (visitErr) throw visitErr;
+
+            const lines = action.data.lines.map((l: any) => ({
+              visit_id: visitData.id,
+              barcode: l.barcode,
+              product: l.product,
+              display_quantity: l.displayQuantity,
+              secondary_display_quantity: l.secondaryDisplayQuantity,
+              warehouse_quantity: l.warehouseQuantity,
+              total_quantity: l.displayQuantity + l.secondaryDisplayQuantity + l.warehouseQuantity
+            }));
+            await supabase.from('stocktake_lines').insert(lines);
+
+          } else if (action.type === "restock") {
+            await supabase.from('stock_restocks').insert({
+              store_id: storeId,
+              product: action.data.product,
+              barcode: action.data.barcode,
+              quantity: action.data.quantity,
+              received_at: action.data.receivedAt,
+              note: action.data.note || null,
+              client_id: action.data.clientId,
+              user_id: session.user.id
+            });
+          }
         } catch (err) {
           remainingQueue.push(action);
         }
@@ -405,11 +412,12 @@ export default function Operations() {
     toast({ title: "Masuk Keranjang", description: `+${qty} unit ${productName}` });
   });
 
-  const onSaveVisit = visitForm.handleSubmit((values) => {
+  // 3. SIMPAN KUNJUNGAN SO (ONLINE)
+  const onSaveVisit = visitForm.handleSubmit(async (values) => {
     if (!activeStore) return toast({ title: "Pilih toko dulu", variant: "destructive" });
     if (cart.length === 0) return visitForm.setError("root", { message: "Keranjang kosong. Input barang dulu." });
 
-    const lines: StocktakeLineInput[] = cart.map((item) => ({
+    const lines = cart.map((item) => ({
       barcode: item.barcode,
       product: item.product,
       displayQuantity: item.quantity,
@@ -428,26 +436,52 @@ export default function Operations() {
       return toast({ title: "Tersimpan di HP (Offline)" });
     }
 
-    createVisit.mutate({ data: payload }, {
-      onSuccess: (visit) => {
-        visitClientId.current = null;
-        setCart([]);
-        visitForm.reset({ visitedAt: localDateTime() });
-        refreshAffectedData();
-        toast({ title: "Stok Dikunci!", description: `${visit.lines?.length ?? lines.length} SKU tersimpan.` });
-      },
-      onError: (error) => toast({ title: "Gagal menyimpan", description: error.message, variant: "destructive" }),
-    });
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const storeId = await getStoreId();
+      if (!storeId) throw new Error("Toko tidak ditemukan di database");
+
+      const { data: visitData, error: visitErr } = await supabase.from('stock_visits').insert({
+        store_id: storeId,
+        visited_at: payload.visitedAt,
+        client_id: payload.clientId,
+        user_id: session?.user?.id
+      }).select().single();
+
+      if (visitErr) throw visitErr;
+
+      const linesToInsert = lines.map(l => ({
+        visit_id: visitData.id,
+        barcode: l.barcode,
+        product: l.product,
+        total_quantity: l.displayQuantity + l.secondaryDisplayQuantity + l.warehouseQuantity,
+        display_quantity: l.displayQuantity,
+        secondary_display_quantity: l.secondaryDisplayQuantity,
+        warehouse_quantity: l.warehouseQuantity
+      }));
+      
+      const { error: linesErr } = await supabase.from('stocktake_lines').insert(linesToInsert);
+      if (linesErr) throw linesErr;
+
+      visitClientId.current = null;
+      setCart([]);
+      visitForm.reset({ visitedAt: localDateTime() });
+      refreshAffectedData();
+      toast({ title: "Stok Dikunci!", description: `${lines.length} SKU tersimpan.` });
+    } catch (error: any) {
+      toast({ title: "Gagal menyimpan", description: error.message, variant: "destructive" });
+    }
   });
 
-  const onSaveRestock = restockForm.handleSubmit((values) => {
+  // 4. SIMPAN BARANG MASUK / RESTOCK (ONLINE)
+  const onSaveRestock = restockForm.handleSubmit(async (values) => {
     if (!activeStore) return toast({ title: "Pilih toko dulu", variant: "destructive" });
     
     restockClientId.current ??= crypto.randomUUID();
     const payload = {
       clientId: restockClientId.current, store: activeStore, product: values.product.trim(), barcode: values.barcode.trim(),
       quantity: Number(values.quantity), receivedAt: new Date(values.receivedAt).toISOString(),
-      ...(values.note.trim() ? { note: values.note.trim() } : {}),
+      note: values.note.trim() || null,
     };
 
     if (!isOnline) {
@@ -459,33 +493,64 @@ export default function Operations() {
       return toast({ title: "Tersimpan di HP (Offline)" });
     }
 
-    createRestock.mutate({ data: payload }, {
-      onSuccess: (entry) => {
-        restockClientId.current = null;
-        setRestockProductSelection("");
-        setRestockSearchQuery("");
-        restockForm.reset({ barcode: "", product: "", quantity: "", receivedAt: localDateTime(), note: "" });
-        refreshAffectedData();
-        toast({ title: "Barang masuk tersimpan", description: `+${entry.quantity} unit ${entry.product}` });
-      },
-      onError: (error) => toast({ title: "Gagal menyimpan", description: error.message, variant: "destructive" }),
-    });
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const storeId = await getStoreId();
+      if (!storeId) throw new Error("Toko tidak ditemukan di database");
+
+      const { error } = await supabase.from('stock_restocks').insert({
+        store_id: storeId,
+        product: payload.product,
+        barcode: payload.barcode,
+        quantity: payload.quantity,
+        received_at: payload.receivedAt,
+        note: payload.note,
+        client_id: payload.clientId,
+        user_id: session?.user?.id
+      });
+
+      if (error) throw error;
+
+      restockClientId.current = null;
+      setRestockProductSelection("");
+      setRestockSearchQuery("");
+      restockForm.reset({ barcode: "", product: "", quantity: "", receivedAt: localDateTime(), note: "" });
+      refreshAffectedData();
+      toast({ title: "Barang masuk tersimpan", description: `+${payload.quantity} unit ${payload.product}` });
+    } catch (error: any) {
+      toast({ title: "Gagal menyimpan", description: error.message, variant: "destructive" });
+    }
   });
 
-  const onDeleteVisit = (id: number) => {
+  // 5. HAPUS KUNJUNGAN (SUPABASE)
+  const onDeleteVisit = async (id: string) => {
     if (!window.confirm("Hapus kunjungan stok ini?")) return;
-    deleteVisit.mutate({ id }, {
-      onSuccess: () => { refreshAffectedData(); toast({ title: "Kunjungan dihapus" }); },
-      onError: (error) => toast({ title: "Gagal menghapus", description: error.message, variant: "destructive" }),
-    });
+    try {
+      // Hapus lines dulu (jika tidak ada ON DELETE CASCADE di database)
+      await supabase.from('stocktake_lines').delete().eq('visit_id', id);
+      // Hapus visit utama
+      const { error } = await supabase.from('stock_visits').delete().eq('id', id);
+      if (error) throw error;
+      
+      refreshAffectedData(); 
+      toast({ title: "Kunjungan dihapus" });
+    } catch (error: any) {
+      toast({ title: "Gagal menghapus", description: error.message, variant: "destructive" });
+    }
   };
 
-  const onDeleteRestock = (entry: StockRestock) => {
+  // 6. HAPUS RESTOCK (SUPABASE)
+  const onDeleteRestock = async (entry: any) => {
     if (!window.confirm(`Hapus penerimaan ${entry.quantity} unit ${entry.product}?`)) return;
-    deleteRestock.mutate({ id: entry.id }, {
-      onSuccess: () => { refreshAffectedData(); toast({ title: "Barang masuk dihapus" }); },
-      onError: (error) => toast({ title: "Gagal menghapus", description: error.message, variant: "destructive" }),
-    });
+    try {
+      const { error } = await supabase.from('stock_restocks').delete().eq('id', entry.id);
+      if (error) throw error;
+      
+      refreshAffectedData(); 
+      toast({ title: "Barang masuk dihapus" });
+    } catch (error: any) {
+      toast({ title: "Gagal menghapus", description: error.message, variant: "destructive" });
+    }
   };
 
   return (
@@ -514,7 +579,7 @@ export default function Operations() {
         <section className="mb-6 rounded-2xl border border-sky-100 bg-white p-5 shadow-sm">
           <label htmlFor="active-store" className="mb-2 flex items-center gap-2 text-sm font-bold"><Boxes className="h-4 w-4 text-sky-600" /> Toko Aktif</label>
           <input id="active-store" list="known-stores" value={storeName} onChange={(e) => setStoreName(e.target.value)} placeholder="Ketik nama toko..." required className="h-12 w-full rounded-xl border border-sky-200 bg-sky-50 px-4 text-base font-medium outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-500/20" />
-          <datalist id="known-stores">{(storesQuery.data ?? []).map((store) => <option key={store.name} value={store.name} />)}</datalist>
+          <datalist id="known-stores">{storesData.map((store: any) => <option key={store.name} value={store.name} />)}</datalist>
         </section>
 
         <div className="mb-6 grid grid-cols-2 gap-2 rounded-xl bg-sky-100 p-1.5">
@@ -592,8 +657,8 @@ export default function Operations() {
                       <FormItem className="mb-4"><FormLabel className="text-sm font-bold">Waktu Kunjungan</FormLabel><FormControl><input {...field} type="datetime-local" className="h-12 w-full rounded-xl border border-sky-200 bg-sky-50 px-3 text-sm font-medium focus:border-sky-500 outline-none" /></FormControl><FormMessage /></FormItem>
                     )} />
                     {visitForm.formState.errors.root?.message && <p className="mb-3 text-sm font-bold text-red-500">{visitForm.formState.errors.root.message}</p>}
-                    <button type="submit" disabled={createVisit.isPending || cart.length === 0 || !activeStore} className="group inline-flex h-14 w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-sky-600 to-blue-700 px-4 text-base font-bold text-white shadow-lg disabled:opacity-50">
-                      <CheckCircle2 className="h-6 w-6" />{createVisit.isPending ? "Mengunci..." : isOnline ? "Kunci & Simpan Kunjungan" : "Simpan (Offline)"}
+                    <button type="submit" disabled={!activeStore || cart.length === 0} className="group inline-flex h-14 w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-sky-600 to-blue-700 px-4 text-base font-bold text-white shadow-lg disabled:opacity-50">
+                      <CheckCircle2 className="h-6 w-6" />{isOnline ? "Kunci & Simpan Kunjungan" : "Simpan (Offline)"}
                     </button>
                   </form>
                 </Form>
@@ -666,8 +731,8 @@ export default function Operations() {
                   <FormField control={restockForm.control} name="note" render={({ field }) => (
                     <FormItem><FormLabel className="text-sm font-bold">Catatan (Opsional)</FormLabel><FormControl><textarea {...field} rows={2} maxLength={500} placeholder="Contoh: pengiriman pagi" className="w-full resize-y rounded-xl border border-sky-200 bg-sky-50 px-3 py-2 text-sm font-medium focus:border-sky-500 outline-none" /></FormControl><FormMessage /></FormItem>
                   )} />
-                  <button type="submit" disabled={createRestock.isPending || !activeStore} className="inline-flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-sky-600 px-4 text-sm font-bold text-white shadow-md hover:bg-sky-700 disabled:opacity-50">
-                    <PackagePlus className="h-5 w-5" />{createRestock.isPending ? "Menyimpan..." : isOnline ? "Simpan Barang Masuk" : "Simpan (Offline)"}
+                  <button type="submit" disabled={!activeStore} className="inline-flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-sky-600 px-4 text-sm font-bold text-white shadow-md hover:bg-sky-700 disabled:opacity-50">
+                    <PackagePlus className="h-5 w-5" />{isOnline ? "Simpan Barang Masuk" : "Simpan (Offline)"}
                   </button>
                 </form>
               </Form>
