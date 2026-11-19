@@ -91,48 +91,73 @@ export default function Home() {
     fetchStores();
   }, [fetchStores]);
 
-  // 2. AMBIL SALDO STOK LANGSUNG DARI SUPABASE (Menggantikan API Vercel)
+  // 2. AMBIL SALDO STOK TERAKHIR (DARI SO & BARANG MASUK)
   const { data: stockBalances = [], isLoading: isLoadingStocks } = useQuery({
     queryKey: ['stockBalances', activeStore],
     queryFn: async () => {
       if (!activeStore) return [];
       
-      // Asumsi nama tabelmu di Supabase adalah 'stock_movements' atau 'stock_entries'
-      // Sesuaikan nama tabel ini jika berbeda di database Supabase-mu
-      const { data, error } = await supabase
-        .from('stock_entries') // <--- GANTI JIKA NAMA TABELMU BEDA
-        .select('*')
-        .eq('store', activeStore);
+      const { data: storeData } = await supabase.from('stores').select('id').eq('name', activeStore).maybeSingle();
+      if (!storeData) return [];
 
-      if (error) throw error;
-      
-      // Hitung agregasi saldo per produk (simulasi dari backend sebelumnya)
-      // (Logika ini menyesuaikan dengan struktur UI keranjangmu)
-      const balances: any = {};
-      data?.forEach((entry: any) => {
-        if (!balances[entry.barcode]) {
-          balances[entry.barcode] = {
-            store: entry.store,
-            barcode: entry.barcode,
-            product: entry.product,
-            totalQuantity: 0
+      // A. Ambil SO Terakhir untuk toko ini
+      const { data: lastVisit } = await supabase
+        .from('stock_visits')
+        .select('id, visited_at')
+        .eq('store_id', storeData.id)
+        .order('visited_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      let balances: Record<string, any> = {};
+
+      if (lastVisit) {
+        const { data: lines } = await supabase
+          .from('stocktake_lines')
+          .select('product, barcode, total_quantity')
+          .eq('visit_id', lastVisit.id);
+          
+        lines?.forEach((l) => {
+          balances[l.barcode] = {
+            store: activeStore,
+            product: l.product,
+            barcode: l.barcode,
+            totalQuantity: l.total_quantity,
+            lastUpdated: lastVisit.visited_at
           };
-        }
-        // Logika penambahan/pengurangan disesuaikan dengan tipemu
-        const isOut = ['Penjualan', 'Koreksi Stok -'].includes(entry.transaction);
-        const qty = (entry.displayQuantity || 0) + (entry.secondaryDisplayQuantity || 0) + (entry.warehouseQuantity || 0);
-        
-        if (isOut) {
-          balances[entry.barcode].totalQuantity -= qty;
+        });
+      }
+
+      // B. Tambahkan Barang Masuk (Restock) yang terjadi SETELAH SO terakhir
+      let restockQuery = supabase
+        .from('stock_restocks')
+        .select('product, barcode, quantity, received_at')
+        .eq('store_id', storeData.id);
+
+      if (lastVisit) {
+        restockQuery = restockQuery.gte('received_at', lastVisit.visited_at);
+      }
+
+      const { data: restocks } = await restockQuery;
+
+      restocks?.forEach((r) => {
+        if (balances[r.barcode]) {
+          balances[r.barcode].totalQuantity += r.quantity;
         } else {
-          balances[entry.barcode].totalQuantity += qty;
+          balances[r.barcode] = {
+            store: activeStore,
+            product: r.product,
+            barcode: r.barcode,
+            totalQuantity: r.quantity,
+            lastUpdated: r.received_at
+          };
         }
       });
 
       return Object.values(balances);
     },
     enabled: !!activeStore,
-    refetchInterval: 5000, // Auto refresh setiap 5 detik
+    refetchInterval: 5000, 
   });
 
   useEffect(() => {
@@ -246,7 +271,7 @@ export default function Home() {
     });
   };
 
-  // 4. SIMPAN KERANJANG LANGSUNG KE SUPABASE (Menggantikan API Vercel)
+  // 4. SIMPAN KERANJANG LANGSUNG KE SUPABASE
   const handleSubmitAll = async () => {
     if (!activeStore || cart.length === 0) return;
     setIsSaving(true);
@@ -256,7 +281,6 @@ export default function Home() {
     try {
       const { data: { session } } = await supabase.auth.getSession();
       
-      // Siapkan data untuk dimasukkan secara borongan (bulk insert)
       const insertData = cart.map(item => ({
         client_id: globalThis.crypto.randomUUID(),
         store: activeStore,
@@ -267,11 +291,11 @@ export default function Home() {
         display_quantity: item.displayQuantity,
         secondary_display_quantity: item.secondaryDisplayQuantity,
         warehouse_quantity: item.warehouseQuantity,
-        user_id: session?.user?.id // TAMBAHAN: Rekam siapa yang input (untuk fitur pinjam HP)
+        user_id: session?.user?.id 
       }));
 
       const { error } = await supabase
-        .from('stock_entries') // <--- GANTI JIKA NAMA TABELMU BEDA
+        .from('stock_entries')
         .insert(insertData);
 
       if (error) throw error;
@@ -280,7 +304,6 @@ export default function Home() {
       toast({ title: 'Berhasil', description: `${successCount} produk berhasil disimpan.` });
       setCart([]);
       
-      // Refresh data stok
       queryClient.invalidateQueries({ queryKey: ['stockBalances', activeStore] });
 
     } catch (error: any) {
@@ -299,7 +322,6 @@ export default function Home() {
 
   return (
     <div className="min-h-[100dvh] w-full bg-sky-50/50 dark:bg-slate-950 flex flex-col items-center pb-24">
-      {/* HEADER BIRU MUDA */}
       <header className="w-full max-w-md bg-gradient-to-br from-sky-600 to-blue-700 text-white pt-12 pb-6 px-6 shadow-lg rounded-b-[2rem] mb-6 sticky top-0 z-20">
         <div className="flex justify-between items-start mb-4">
           <div>
