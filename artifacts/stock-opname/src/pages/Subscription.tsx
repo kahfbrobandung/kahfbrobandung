@@ -64,7 +64,6 @@ export default function Subscription() {
     );
   }
 
-  // BUG FIX #1: user belum login
   if (authed === false) {
     return (
       <div className="min-h-[100dvh] flex flex-col items-center justify-center px-6 text-center bg-slate-50">
@@ -80,7 +79,6 @@ export default function Subscription() {
     );
   }
 
-  // BUG FIX #2: fallback per-field (bukan ganti seluruh object)
   const planName = subData?.plan_name ?? "Basic";
   const status = subData?.status ?? "trial";
   const endDateISO = subData?.current_period_ends_at ?? null;
