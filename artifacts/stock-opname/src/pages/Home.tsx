@@ -8,17 +8,9 @@ import { useToast } from '@/hooks/use-toast';
 import {
   Box, RefreshCw, Send, Trash2, Plus, Minus, ShoppingCart, Search, Camera, X, Package, LogOut, Store
 } from 'lucide-react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useLocation } from 'wouter';
 import { supabase } from '@/supabase'; 
-import {
-  getGetSalesActivityQueryKey,
-  getGetSalesMonitorQueryKey,
-  getListStockBalancesQueryKey,
-  useCreateStockEntry,
-  useListStockBalances,
-  customFetch,
-} from '@workspace/api-client-react';
 
 const TRANSACTIONS = ['Input Stok', 'Stock Awal', 'Penjualan', 'Koreksi Stok +', 'Koreksi Stok -', 'Pembelian', 'Retur', 'Lainnya'];
 
@@ -29,7 +21,6 @@ type CartItem = {
   warehouseQuantity: number;
 };
 
-// Helper untuk mencegah input NaN atau angka minus
 const parseQty = (val: string): number => {
   const parsed = parseInt(val, 10);
   return isNaN(parsed) || parsed < 0 ? 0 : parsed;
@@ -45,34 +36,29 @@ export default function Home() {
   const [transaction, setTransaction] = useState(TRANSACTIONS[0]);
   const [isScannerOpen, setIsScannerOpen] = useState(false);
   
-  // State Tambah Toko
   const [isAddStoreOpen, setIsAddStoreOpen] = useState(false);
   const [newStoreName, setNewStoreName] = useState('');
   const [isAddingStore, setIsAddingStore] = useState(false);
 
-  // State Daftar Toko (Bypass API)
   const [dbStores, setDbStores] = useState<string[]>([]);
   const [isLoadingStores, setIsLoadingStores] = useState(true);
 
-  // Pencarian
   const [searchQuery, setSearchQuery] = useState('');
   const [showSearchResults, setShowSearchResults] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const searchContainerRef = useRef<HTMLDivElement>(null);
   const qtyInputRef = useRef<HTMLInputElement>(null);
 
-  // Input Qty
   const [displayQuantity, setDisplayQuantity] = useState<string>('');
   const [secondaryDisplayQuantity, setSecondaryDisplayQuantity] = useState<string>('');
   const [warehouseQuantity, setWarehouseQuantity] = useState<string>('');
   
-  // Keranjang
   const [cart, setCart] = useState<CartItem[]>([]);
   const [isSaving, setIsSaving] = useState(false);
 
   const activeStore = storeName.trim();
 
-  // 1. FUNGSI AMBIL TOKO LANGSUNG DARI SUPABASE (Anti Gagal)
+  // 1. AMBIL DAFTAR TOKO LANGSUNG DARI SUPABASE
   const fetchStores = useCallback(async () => {
     setIsLoadingStores(true);
     try {
@@ -90,7 +76,6 @@ export default function Home() {
       if (data) {
         const names = data.map(s => s.name);
         setDbStores(names);
-        // Otomatis pilih toko pertama jika belum ada yang dipilih
         if (!storeName && names.length > 0) {
           setStoreName(names[0]);
         }
@@ -102,18 +87,53 @@ export default function Home() {
     }
   }, [storeName, setStoreName]);
 
-  // Panggil fetchStores saat halaman dimuat
   useEffect(() => {
     fetchStores();
   }, [fetchStores]);
 
-  // Ambil saldo stok (tetap pakai API)
-  const { data: stockBalances = [] } = useListStockBalances(
-    { store: activeStore },
-    { query: { queryKey: getListStockBalancesQueryKey({ store: activeStore }), refetchInterval: 5000, enabled: !!activeStore } }
-  );
+  // 2. AMBIL SALDO STOK LANGSUNG DARI SUPABASE (Menggantikan API Vercel)
+  const { data: stockBalances = [], isLoading: isLoadingStocks } = useQuery({
+    queryKey: ['stockBalances', activeStore],
+    queryFn: async () => {
+      if (!activeStore) return [];
+      
+      // Asumsi nama tabelmu di Supabase adalah 'stock_movements' atau 'stock_entries'
+      // Sesuaikan nama tabel ini jika berbeda di database Supabase-mu
+      const { data, error } = await supabase
+        .from('stock_entries') // <--- GANTI JIKA NAMA TABELMU BEDA
+        .select('*')
+        .eq('store', activeStore);
 
-  const submitMutation = useCreateStockEntry();
+      if (error) throw error;
+      
+      // Hitung agregasi saldo per produk (simulasi dari backend sebelumnya)
+      // (Logika ini menyesuaikan dengan struktur UI keranjangmu)
+      const balances: any = {};
+      data?.forEach((entry: any) => {
+        if (!balances[entry.barcode]) {
+          balances[entry.barcode] = {
+            store: entry.store,
+            barcode: entry.barcode,
+            product: entry.product,
+            totalQuantity: 0
+          };
+        }
+        // Logika penambahan/pengurangan disesuaikan dengan tipemu
+        const isOut = ['Penjualan', 'Koreksi Stok -'].includes(entry.transaction);
+        const qty = (entry.displayQuantity || 0) + (entry.secondaryDisplayQuantity || 0) + (entry.warehouseQuantity || 0);
+        
+        if (isOut) {
+          balances[entry.barcode].totalQuantity -= qty;
+        } else {
+          balances[entry.barcode].totalQuantity += qty;
+        }
+      });
+
+      return Object.values(balances);
+    },
+    enabled: !!activeStore,
+    refetchInterval: 5000, // Auto refresh setiap 5 detik
+  });
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -127,24 +147,32 @@ export default function Home() {
 
   const handleLogout = async () => {
     if (!window.confirm("Apakah Anda yakin ingin keluar dari aplikasi?")) return;
-    queryClient.clear(); // Bersihkan cache React Query
+    queryClient.clear();
     await supabase.auth.signOut();
     setLocation('/login');
   };
 
+  // 3. TAMBAH TOKO LANGSUNG KE SUPABASE
   const handleAddStore = async () => {
     if (!newStoreName.trim()) return toast({ title: 'Peringatan', description: 'Nama toko tidak boleh kosong.', variant: 'destructive' });
     setIsAddingStore(true);
     try {
-      await customFetch('/stores', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: newStoreName.trim() }),
-      });
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) throw new Error("Sesi tidak ditemukan");
+
+      const { error } = await supabase
+        .from('stores')
+        .insert({ 
+          name: newStoreName.trim(),
+          user_id: session.user.id 
+        });
+
+      if (error) throw error;
+
       toast({ title: 'Sukses', description: 'Toko berhasil ditambahkan.' });
       setIsAddStoreOpen(false);
       setNewStoreName('');
-      fetchStores(); // Refresh daftar toko langsung dari Supabase
+      fetchStores(); 
     } catch (error: any) {
       toast({ title: 'Gagal', description: error.message || 'Gagal menambah toko', variant: 'destructive' });
     } finally {
@@ -218,54 +246,56 @@ export default function Home() {
     });
   };
 
+  // 4. SIMPAN KERANJANG LANGSUNG KE SUPABASE (Menggantikan API Vercel)
   const handleSubmitAll = async () => {
     if (!activeStore || cart.length === 0) return;
     setIsSaving(true);
     let successCount = 0;
     let failedCount = 0;
-    const isAdjustment = transaction.includes('Koreksi');
 
-    for (const item of cart) {
-      try {
-        await submitMutation.mutateAsync({ data: {
-          clientId: globalThis.crypto.randomUUID(), 
-          store: activeStore, 
-          transaction, 
-          product: item.product.name,
-          quantity: item.displayQuantity + item.secondaryDisplayQuantity + item.warehouseQuantity,
-          barcode: item.product.barcode, 
-          displayQuantity: item.displayQuantity,
-          secondaryDisplayQuantity: item.secondaryDisplayQuantity, 
-          warehouseQuantity: item.warehouseQuantity,
-          ...(isAdjustment ? { sourceType: 'adjustment' as const } : {}),
-        } as any });
-        successCount++;
-      } catch (error) {
-        console.error("Gagal simpan item:", item.product.name, error);
-        failedCount++;
-      }
-    }
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      
+      // Siapkan data untuk dimasukkan secara borongan (bulk insert)
+      const insertData = cart.map(item => ({
+        client_id: globalThis.crypto.randomUUID(),
+        store: activeStore,
+        transaction: transaction,
+        product: item.product.name,
+        barcode: item.product.barcode,
+        quantity: item.displayQuantity + item.secondaryDisplayQuantity + item.warehouseQuantity,
+        display_quantity: item.displayQuantity,
+        secondary_display_quantity: item.secondaryDisplayQuantity,
+        warehouse_quantity: item.warehouseQuantity,
+        user_id: session?.user?.id // TAMBAHAN: Rekam siapa yang input (untuk fitur pinjam HP)
+      }));
 
-    setIsSaving(false);
+      const { error } = await supabase
+        .from('stock_entries') // <--- GANTI JIKA NAMA TABELMU BEDA
+        .insert(insertData);
 
-    if (failedCount === 0) {
+      if (error) throw error;
+      
+      successCount = cart.length;
       toast({ title: 'Berhasil', description: `${successCount} produk berhasil disimpan.` });
       setCart([]);
-    } else {
+      
+      // Refresh data stok
+      queryClient.invalidateQueries({ queryKey: ['stockBalances', activeStore] });
+
+    } catch (error: any) {
+      console.error("Gagal simpan:", error);
       toast({ 
-        title: 'Sebagian Gagal', 
-        description: `${successCount} tersimpan, ${failedCount} gagal. Silakan cek jaringan Anda.`, 
+        title: 'Gagal Menyimpan', 
+        description: error.message || 'Terjadi kesalahan koneksi ke database.', 
         variant: 'destructive' 
       });
-      setCart([]); 
+    } finally {
+      setIsSaving(false);
     }
-    
-    queryClient.invalidateQueries({ queryKey: getListStockBalancesQueryKey() });
-    queryClient.invalidateQueries({ queryKey: getGetSalesMonitorQueryKey() });
-    queryClient.invalidateQueries({ queryKey: getGetSalesActivityQueryKey() });
   };
 
-  const selectedBalance = selectedProduct ? stockBalances.find(b => b.barcode === selectedProduct.barcode) : null;
+  const selectedBalance = selectedProduct ? stockBalances.find((b: any) => b.barcode === selectedProduct.barcode) : null;
 
   return (
     <div className="min-h-[100dvh] w-full bg-sky-50/50 dark:bg-slate-950 flex flex-col items-center pb-24">
@@ -287,23 +317,17 @@ export default function Home() {
           </div>
         </div>
         
-        {/* TOMBOL NAVIGASI */}
         <div className="flex gap-2">
           <Link href="/operasional" className="flex-1 bg-white/10 hover:bg-white/20 transition-colors rounded-xl py-2 text-center text-[10px] sm:text-xs font-semibold shadow-sm">Kunjungan SO</Link>
           <Link href="/dashboard" className="flex-1 bg-white/10 hover:bg-white/20 transition-colors rounded-xl py-2 text-center text-[10px] sm:text-xs font-semibold shadow-sm">Laporan</Link>
-          
           <Link href="/subscription" className="flex-1 bg-gradient-to-r from-amber-300 to-yellow-400 hover:from-amber-400 hover:to-yellow-500 text-blue-900 rounded-xl py-2 text-center text-[10px] sm:text-xs font-bold shadow-md shadow-amber-500/30">Langganan 👑</Link>
         </div>
       </header>
 
       <main className="w-full max-w-md px-4 flex flex-col gap-5">
-        
-        {/* FORM INPUT & KERANJANG */}
         <div className="bg-white dark:bg-slate-900 border border-sky-100 dark:border-slate-800 shadow-sm rounded-2xl p-5">
           <div className="space-y-4">
             <div className="grid grid-cols-2 gap-3">
-              
-              {/* DROPDOWN TOKO & TOMBOL TAMBAH */}
               <div className="space-y-1">
                 <label className="text-xs font-bold text-sky-700 dark:text-sky-500 uppercase tracking-wider flex items-center gap-1"><Box size={12} /> Toko</label>
                 <div className="flex gap-1">
@@ -438,16 +462,17 @@ export default function Home() {
 
         <ProductManager products={products} onAdd={addProduct} onRemove={removeProduct} onUpdate={updateProduct} onReplace={replaceProducts} />
 
-        {/* --- BAGIAN STOK PRODUK (SALDO) --- */}
         <section className="bg-white dark:bg-slate-900 border border-sky-100 dark:border-slate-800 shadow-sm rounded-2xl p-5">
           <h2 className="font-serif text-lg font-bold flex items-center gap-2 mb-4 text-slate-800 dark:text-slate-100">
             <Package size={18} className="text-sky-600" /> Stok Produk Saat Ini
           </h2>
-          {stockBalances.length === 0 ? (
+          {isLoadingStocks ? (
+             <p className="text-center text-sm text-sky-500 py-4 animate-pulse">Menghubungkan ke Database...</p>
+          ) : stockBalances.length === 0 ? (
             <p className="text-center text-sm text-sky-500 py-4">Belum ada stok barang di toko ini.</p>
           ) : (
             <div className="space-y-2">
-              {stockBalances.map((balance) => (
+              {stockBalances.map((balance: any) => (
                 <div key={`${balance.store}-${balance.barcode}`} className="flex items-center justify-between p-3 rounded-xl border border-sky-50 dark:border-slate-800 bg-sky-50/30 dark:bg-slate-950/50">
                   <div className="min-w-0 pr-2">
                     <p className="text-sm font-bold text-slate-800 dark:text-slate-200 truncate">{balance.product}</p>
@@ -465,7 +490,6 @@ export default function Home() {
 
       <BarcodeScanner isOpen={isScannerOpen} onClose={() => setIsScannerOpen(false)} onScanSuccess={handleScanSuccess} />
 
-      {/* MODAL TAMBAH TOKO BARU */}
       {isAddStoreOpen && (
         <div className="fixed inset-0 bg-sky-950/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4 animate-in fade-in zoom-in-95">
           <div className="bg-white dark:bg-slate-900 rounded-2xl p-6 w-full max-w-sm shadow-2xl space-y-4 border border-sky-100 dark:border-slate-800">
