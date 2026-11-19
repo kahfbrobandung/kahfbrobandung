@@ -13,16 +13,6 @@ import SubscriptionPage from '@/pages/Subscription';
 import { supabase } from './supabase';
 import { Route, Switch, Router as WouterRouter, Redirect } from 'wouter';
 import { useHashLocation } from 'wouter/use-hash-location';
-import { setAuthTokenGetter, setBaseUrl } from '@workspace/api-client-react';
-
-// 1. Arahkan ke backend Vercel (Gunakan env var untuk fleksibilitas)
-setBaseUrl(import.meta.env.VITE_API_BASE_URL || 'https://kahfbrobandung-7qyj.vercel.app');
-
-// 2. Ambil token login dari Supabase secara otomatis
-setAuthTokenGetter(async () => {
-  const { data: { session } } = await supabase.auth.getSession();
-  return session?.access_token ?? null;
-});
 
 const queryClient = new QueryClient({
   defaultOptions: {
