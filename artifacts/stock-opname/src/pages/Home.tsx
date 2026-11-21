@@ -15,7 +15,6 @@ export default function Home() {
   const [, setLocation] = useLocation();
   const queryClient = useQueryClient();
   
-  // Panggil Hook Produk dari Supabase
   const { products, addProduct, removeProduct, updateProduct, replaceProducts } = useProducts();
 
   const [isAddStoreOpen, setIsAddStoreOpen] = useState(false);
@@ -52,7 +51,7 @@ export default function Home() {
 
   useEffect(() => { fetchStores(); }, [fetchStores]);
 
-  // 2. AMBIL SALDO STOK TERAKHIR (DARI SO & BARANG MASUK)
+  // 2. AMBIL SALDO STOK TERAKHIR (DIPERBAIKI: Ambil dari beberapa kunjungan)
   const { data: stockBalances = [], isLoading: isLoadingStocks } = useQuery({
     queryKey: ['stockBalances', activeStore],
     queryFn: async () => {
@@ -60,33 +59,58 @@ export default function Home() {
       const { data: storeData } = await supabase.from('stores').select('id').eq('name', activeStore).maybeSingle();
       if (!storeData) return [];
 
-      const { data: lastVisit } = await supabase
+      // Ambil 50 kunjungan terakhir untuk menemukan SO terbaru dari masing-masing produk
+      const { data: visits } = await supabase
         .from('stock_visits')
-        .select('id, visited_at')
+        .select('id, visited_at, stocktake_lines ( barcode, product, total_quantity )')
         .eq('store_id', storeData.id)
         .order('visited_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
+        .limit(50);
 
       let balances: Record<string, any> = {};
-      if (lastVisit) {
-        const { data: lines } = await supabase
-          .from('stocktake_lines')
-          .select('product, barcode, total_quantity')
-          .eq('visit_id', lastVisit.id);
-        lines?.forEach((l) => {
-          balances[l.barcode] = { store: activeStore, product: l.product, barcode: l.barcode, totalQuantity: l.total_quantity, lastUpdated: lastVisit.visited_at };
+
+      if (visits) {
+        // Iterasi dari yang paling baru ke lama. 
+        // Jika produk sudah ada di daftar, abaikan (karena kita hanya mau stok paling baru).
+        visits.forEach((visit) => {
+          visit.stocktake_lines?.forEach((line: any) => {
+            if (!balances[line.barcode]) {
+              balances[line.barcode] = {
+                store: activeStore,
+                product: line.product,
+                barcode: line.barcode,
+                totalQuantity: line.total_quantity,
+                lastUpdated: visit.visited_at
+              };
+            }
+          });
         });
       }
 
-      let restockQuery = supabase.from('stock_restocks').select('product, barcode, quantity, received_at').eq('store_id', storeData.id);
-      if (lastVisit) restockQuery = restockQuery.gte('received_at', lastVisit.visited_at);
-      const { data: restocks } = await restockQuery;
+      // Tambahkan Barang Masuk (Restock) yang terjadi setelah SO terakhir produk tersebut
+      const { data: restocks } = await supabase
+        .from('stock_restocks')
+        .select('product, barcode, quantity, received_at')
+        .eq('store_id', storeData.id);
 
       restocks?.forEach((r) => {
-        if (balances[r.barcode]) balances[r.barcode].totalQuantity += r.quantity;
-        else balances[r.barcode] = { store: activeStore, product: r.product, barcode: r.barcode, totalQuantity: r.quantity, lastUpdated: r.received_at };
+        if (balances[r.barcode]) {
+          // Hanya tambahkan jika restock terjadi setelah SO terakhir untuk produk ini
+          if (new Date(r.received_at) > new Date(balances[r.barcode].lastUpdated)) {
+            balances[r.barcode].totalQuantity += r.quantity;
+          }
+        } else {
+          // Jika produk belum pernah di-SO sama sekali, tampilkan dari restock
+          balances[r.barcode] = {
+            store: activeStore,
+            product: r.product,
+            barcode: r.barcode,
+            totalQuantity: r.quantity,
+            lastUpdated: r.received_at
+          };
+        }
       });
+
       return Object.values(balances);
     },
     enabled: !!activeStore,
@@ -100,7 +124,6 @@ export default function Home() {
     setLocation('/login');
   };
 
-  // 3. TAMBAH TOKO BARU
   const handleAddStore = async () => {
     if (!newStoreName.trim()) return toast({ title: 'Peringatan', description: 'Nama toko tidak boleh kosong.', variant: 'destructive' });
     setIsAddingStore(true);
@@ -141,7 +164,6 @@ export default function Home() {
 
       <main className="w-full max-w-md px-4 flex flex-col gap-5">
         
-        {/* PILIH TOKO */}
         <div className="bg-white dark:bg-slate-900 border border-sky-100 dark:border-slate-800 shadow-sm rounded-2xl p-5">
           <div className="space-y-4">
             <div className="grid grid-cols-1 gap-3">
@@ -159,7 +181,6 @@ export default function Home() {
           </div>
         </div>
 
-        {/* --- MENU KELOLA PRODUK MASTER (DIPINDAH KE ATAS) --- */}
         <ProductManager 
           products={products} 
           onAdd={addProduct} 
@@ -167,9 +188,7 @@ export default function Home() {
           onUpdate={updateProduct} 
           onReplace={replaceProducts} 
         />
-        {/* ------------------------------------------------------ */}
 
-        {/* STOK PRODUK SAAT INI */}
         <section className="bg-white dark:bg-slate-900 border border-sky-100 dark:border-slate-800 shadow-sm rounded-2xl p-5">
           <h2 className="font-serif text-lg font-bold flex items-center gap-2 mb-4 text-slate-800 dark:text-slate-100">
             <Package size={18} className="text-sky-600" /> Stok Produk Saat Ini
