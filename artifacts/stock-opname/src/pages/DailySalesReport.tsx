@@ -16,7 +16,6 @@ export default function DailySalesReport() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   
-  // Default filter: 1 Tahun ke belakang agar data lama pasti ketemu
   const [dateRange, setDateRange] = useState(() => {
     const today = new Date();
     const lastYear = new Date();
@@ -27,16 +26,15 @@ export default function DailySalesReport() {
     };
   });
 
-  // 1. AMBIL DATA (DIPISAH AGAR LEBIH STABIL)
+  // 1. AMBIL DATA
   const { data: rawData, isLoading, isError } = useQuery({
     queryKey: ['salesReport', activeStore, dateRange.from, dateRange.to],
     queryFn: async () => {
       if (!activeStore) return { visits: [], lines: [], restocks: [] };
 
-      const { data: storeData } = await supabase.from('stores').select('id').eq('name', activeStore).maybeSingle();
+      const { data: storeData } = await supabase.from('stores').select('id').ilike('name', activeStore).limit(1).maybeSingle();
       if (!storeData) return { visits: [], lines: [], restocks: [] };
 
-      // A. Ambil Kunjungan (Visits)
       const { data: visits } = await supabase
         .from('stock_visits')
         .select('id, visited_at')
@@ -47,14 +45,12 @@ export default function DailySalesReport() {
 
       if (!visits || visits.length === 0) return { visits: [], lines: [], restocks: [] };
 
-      // B. Ambil Detail Barang (Lines) berdasarkan ID Kunjungan di atas
       const visitIds = visits.map(v => v.id);
       const { data: lines } = await supabase
         .from('stocktake_lines')
         .select('visit_id, barcode, product, total_quantity')
         .in('visit_id', visitIds);
 
-      // C. Ambil Barang Masuk (Restocks)
       const { data: restocks } = await supabase
         .from('stock_restocks')
         .select('id, received_at, barcode, product, quantity')
@@ -78,7 +74,6 @@ export default function DailySalesReport() {
 
     const productMap = new Map<string, { product: string, visits: { date: string, qty: number, id: string }[], restocks: { date: string, qty: number }[] }>();
 
-    // Gabungkan Visits dan Lines ke dalam memori
     rawData.visits.forEach(visit => {
       const visitLines = rawData.lines.filter(l => l.visit_id === visit.id);
       visitLines.forEach(line => {
@@ -89,7 +84,6 @@ export default function DailySalesReport() {
       });
     });
 
-    // Masukkan data restock
     rawData.restocks.forEach(r => {
       if (!productMap.has(r.barcode)) {
          productMap.set(r.barcode, { product: r.product, visits: [], restocks: [] });
@@ -103,9 +97,8 @@ export default function DailySalesReport() {
     const reportItems: any[] = [];
 
     productMap.forEach((data, barcode) => {
-      if (data.visits.length < 2) return; // Butuh min. 2 SO
+      if (data.visits.length < 2) return; 
 
-      // Urutkan SO dari yang paling lama ke terbaru
       const sortedVisits = data.visits.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
 
       for (let i = 0; i < sortedVisits.length - 1; i++) {
@@ -130,7 +123,7 @@ export default function DailySalesReport() {
             startQty: start.qty, restock: restockBetween, endQty: end.qty, sold, endVisitId: end.id
           });
         } else if (sold < 0) {
-          skippedCount++; // Catat jika stok malah bertambah
+          skippedCount++; 
         }
       }
     });
@@ -140,12 +133,15 @@ export default function DailySalesReport() {
   }, [rawData]);
 
   const handleDelete = async (visitId: string) => {
-    if (!window.confirm("Hapus data kunjungan SO ini? Laporan akan dihitung ulang.")) return;
+    if (!window.confirm("Hapus data kunjungan SO ini? Laporan dan Stok akan dihitung ulang.")) return;
     try {
       await supabase.from('stocktake_lines').delete().eq('visit_id', visitId);
       const { error } = await supabase.from('stock_visits').delete().eq('id', visitId);
       if (error) throw error;
-      queryClient.invalidateQueries({ queryKey: ['salesReport'] });
+      
+      // PERBAIKAN: Invalidasi SEMUA cache agar Laporan & Home langsung terupdate
+      queryClient.invalidateQueries(); 
+      
       toast({ title: "Berhasil", description: "Data kunjungan dihapus." });
     } catch (error: any) {
       toast({ title: "Gagal", description: error.message, variant: "destructive" });
