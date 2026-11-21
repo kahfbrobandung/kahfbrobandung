@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { supabase } from "@/supabase";
+import { resolveStatus, type EffectiveStatus, type SubRow } from "@/lib/subscription";
 import { Link } from "wouter";
 import {
   ArrowLeft, CheckCircle2, ShieldAlert, Clock, ExternalLink,
@@ -9,21 +10,6 @@ import {
 // ---------------------------------------------------------------------------
 // Tipe & konstanta
 // ---------------------------------------------------------------------------
-type SubRow = {
-  plan_name: string | null;
-  status: string | null;
-  current_period_ends_at: string | null;
-  trial_ends_at?: string | null;
-};
-
-type EffectiveStatus =
-  | "active"
-  | "trial"
-  | "expired"
-  | "inactive"
-  | "past_due"
-  | "none";
-
 const STATUS_LABEL: Record<EffectiveStatus, string> = {
   active: "Aktif",
   trial: "Trial",
@@ -32,14 +18,6 @@ const STATUS_LABEL: Record<EffectiveStatus, string> = {
   past_due: "Tertunda",
   none: "Belum Berlangganan",
 };
-
-const KNOWN_STATUSES: EffectiveStatus[] = [
-  "active",
-  "trial",
-  "expired",
-  "inactive",
-  "past_due",
-];
 
 // Bisa dioverride lewat environment variable Vercel; nilai lama jadi cadangan.
 const WA_NUMBER =
@@ -56,43 +34,6 @@ const AUTO_ACTIVATION =
 const POLL_INTERVAL_MS = 5_000;
 const POLL_MAX_MS = 5 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
-
-// ---------------------------------------------------------------------------
-// Menentukan status sebenarnya dari data + tanggal.
-// Status "active"/"trial" di database tidak dipercaya mentah-mentah:
-// kalau tanggal berakhirnya sudah lewat, tampilkan sebagai "expired".
-// ---------------------------------------------------------------------------
-function resolveStatus(
-  sub: SubRow | null,
-  now: number,
-): { status: EffectiveStatus; endDate: Date | null } {
-  if (!sub) return { status: "none", endDate: null };
-
-  const parse = (iso: string | null | undefined) => {
-    if (!iso) return null;
-    const d = new Date(iso);
-    return Number.isNaN(d.getTime()) ? null : d;
-  };
-
-  // Paket Owner tidak pernah dianggap kedaluwarsa.
-  if ((sub.plan_name ?? "").toLowerCase() === "owner") {
-    return { status: "active", endDate: parse(sub.current_period_ends_at) };
-  }
-
-  const raw = (sub.status ?? "inactive") as EffectiveStatus;
-  let status: EffectiveStatus = KNOWN_STATUSES.includes(raw) ? raw : "inactive";
-
-  const endDate =
-    status === "trial"
-      ? parse(sub.trial_ends_at) ?? parse(sub.current_period_ends_at)
-      : parse(sub.current_period_ends_at);
-
-  if ((status === "active" || status === "trial") && endDate && endDate.getTime() < now) {
-    status = "expired";
-  }
-
-  return { status, endDate };
-}
 
 export default function Subscription() {
   const [loading, setLoading] = useState(true);
