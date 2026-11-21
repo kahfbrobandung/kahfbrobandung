@@ -51,12 +51,15 @@ export default function Home() {
 
   useEffect(() => { fetchStores(); }, [fetchStores]);
 
-  // 2. AMBIL SALDO STOK TERAKHIR (DIPERBAIKI TOTAL)
+  // 2. AMBIL SALDO STOK TERAKHIR (SUDAH MENGGUNAKAN .ILIKE)
   const { data: stockBalances = [], isLoading: isLoadingStocks } = useQuery({
     queryKey: ['stockBalances', activeStore],
     queryFn: async () => {
       if (!activeStore) return [];
-      const { data: storeData } = await supabase.from('stores').select('id').eq('name', activeStore).maybeSingle();
+      
+      // === PERUBAHAN ADA DI SINI (.ilike) ===
+      const { data: storeData } = await supabase.from('stores').select('id').ilike('name', activeStore).maybeSingle();
+      
       if (!storeData) return [];
 
       // A. Ambil 50 kunjungan terakhir
@@ -69,7 +72,7 @@ export default function Home() {
 
       if (!visits || visits.length === 0) return [];
 
-      // B. Ambil detail barangnya SECARA TERPISAH (mencegah error relasi Supabase)
+      // B. Ambil detail barangnya SECARA TERPISAH
       const visitIds = visits.map(v => v.id);
       const { data: lines } = await supabase
         .from('stocktake_lines')
@@ -79,8 +82,6 @@ export default function Home() {
       let balances: Record<string, any> = {};
 
       if (lines) {
-        // Iterasi kunjungan dari yang paling baru. 
-        // Jika produk sudah ada di daftar, abaikan (kita hanya mau stok paling baru).
         visits.forEach((visit) => {
           const visitLines = lines.filter(l => l.visit_id === visit.id);
           visitLines.forEach((line) => {
@@ -97,7 +98,7 @@ export default function Home() {
         });
       }
 
-      // C. Tambahkan Barang Masuk (Restock) yang terjadi setelah SO terakhir produk tersebut
+      // C. Tambahkan Barang Masuk
       const { data: restocks } = await supabase
         .from('stock_restocks')
         .select('product, barcode, quantity, received_at')
