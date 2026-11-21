@@ -51,15 +51,20 @@ export default function Home() {
 
   useEffect(() => { fetchStores(); }, [fetchStores]);
 
-  // 2. AMBIL SALDO STOK TERAKHIR (SUDAH MENGGUNAKAN .ILIKE)
+  // 2. AMBIL SALDO STOK TERAKHIR (SUDAH DIPERBAIKI TOTAL)
   const { data: stockBalances = [], isLoading: isLoadingStocks } = useQuery({
     queryKey: ['stockBalances', activeStore],
     queryFn: async () => {
       if (!activeStore) return [];
       
-      // === PERUBAHAN ADA DI SINI (.ilike) ===
-      const { data: storeData } = await supabase.from('stores').select('id').ilike('name', activeStore).maybeSingle();
-      
+      // PERBAIKAN: Gunakan limit(1) alih-alih maybeSingle() untuk mencegah error duplikat
+      const { data: storeDataArr } = await supabase
+        .from('stores')
+        .select('id')
+        .ilike('name', activeStore)
+        .limit(1);
+        
+      const storeData = storeDataArr && storeDataArr.length > 0 ? storeDataArr[0] : null;
       if (!storeData) return [];
 
       // A. Ambil 50 kunjungan terakhir
