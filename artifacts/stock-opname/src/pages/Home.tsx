@@ -51,7 +51,7 @@ export default function Home() {
 
   useEffect(() => { fetchStores(); }, [fetchStores]);
 
-  // 2. AMBIL SALDO STOK TERAKHIR (DIPERBAIKI: Ambil dari beberapa kunjungan)
+  // 2. AMBIL SALDO STOK TERAKHIR (DIPERBAIKI TOTAL)
   const { data: stockBalances = [], isLoading: isLoadingStocks } = useQuery({
     queryKey: ['stockBalances', activeStore],
     queryFn: async () => {
@@ -59,21 +59,31 @@ export default function Home() {
       const { data: storeData } = await supabase.from('stores').select('id').eq('name', activeStore).maybeSingle();
       if (!storeData) return [];
 
-      // Ambil 50 kunjungan terakhir untuk menemukan SO terbaru dari masing-masing produk
+      // A. Ambil 50 kunjungan terakhir
       const { data: visits } = await supabase
         .from('stock_visits')
-        .select('id, visited_at, stocktake_lines ( barcode, product, total_quantity )')
+        .select('id, visited_at')
         .eq('store_id', storeData.id)
         .order('visited_at', { ascending: false })
         .limit(50);
 
+      if (!visits || visits.length === 0) return [];
+
+      // B. Ambil detail barangnya SECARA TERPISAH (mencegah error relasi Supabase)
+      const visitIds = visits.map(v => v.id);
+      const { data: lines } = await supabase
+        .from('stocktake_lines')
+        .select('visit_id, barcode, product, total_quantity')
+        .in('visit_id', visitIds);
+
       let balances: Record<string, any> = {};
 
-      if (visits) {
-        // Iterasi dari yang paling baru ke lama. 
-        // Jika produk sudah ada di daftar, abaikan (karena kita hanya mau stok paling baru).
+      if (lines) {
+        // Iterasi kunjungan dari yang paling baru. 
+        // Jika produk sudah ada di daftar, abaikan (kita hanya mau stok paling baru).
         visits.forEach((visit) => {
-          visit.stocktake_lines?.forEach((line: any) => {
+          const visitLines = lines.filter(l => l.visit_id === visit.id);
+          visitLines.forEach((line) => {
             if (!balances[line.barcode]) {
               balances[line.barcode] = {
                 store: activeStore,
@@ -87,7 +97,7 @@ export default function Home() {
         });
       }
 
-      // Tambahkan Barang Masuk (Restock) yang terjadi setelah SO terakhir produk tersebut
+      // C. Tambahkan Barang Masuk (Restock) yang terjadi setelah SO terakhir produk tersebut
       const { data: restocks } = await supabase
         .from('stock_restocks')
         .select('product, barcode, quantity, received_at')
@@ -95,12 +105,10 @@ export default function Home() {
 
       restocks?.forEach((r) => {
         if (balances[r.barcode]) {
-          // Hanya tambahkan jika restock terjadi setelah SO terakhir untuk produk ini
           if (new Date(r.received_at) > new Date(balances[r.barcode].lastUpdated)) {
             balances[r.barcode].totalQuantity += r.quantity;
           }
         } else {
-          // Jika produk belum pernah di-SO sama sekali, tampilkan dari restock
           balances[r.barcode] = {
             store: activeStore,
             product: r.product,
